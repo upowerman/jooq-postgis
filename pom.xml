@@ -10,6 +10,7 @@
 
     <name>JOOQ-PostGis</name>
     <description>JOOQ PostGIS</description>
+    <url>https://github.com/upowerman/jooq-postgis</url>
     <packaging>jar</packaging>
 
     <properties>
@@ -186,16 +187,16 @@
     </licenses>
 
     <scm>
-        <connection>https://github.com/upowerman/small-rpc.git</connection>
-        <developerConnection>https://github.com/upowerman/small-rpc.git</developerConnection>
-        <url>https://github.com/upowerman/small-rpc</url>
+        <connection>git@github.com:upowerman/jooq-postgis.git</connection>
+        <developerConnection>git@github.com:upowerman/jooq-postgis.git</developerConnection>
+        <url>https://github.com/upowerman/jooq-postgis</url>
     </scm>
 
     <developers>
         <developer>
             <name>ethan</name>
             <email>gyf718@foxmail.com</email>
-            <url>https://github.com/upowerman</url>
+            <url>https://github.com/upowerman/jooq-postgis</url>
         </developer>
     </developers>
 </project>
