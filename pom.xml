@@ -33,6 +33,7 @@
             <groupId>org.jooq</groupId>
             <artifactId>jooq</artifactId>
             <version>${jooq.version}</version>
+            <scope>provided</scope>
         </dependency>
 
         <!-- PostgreSQL Driver -->
