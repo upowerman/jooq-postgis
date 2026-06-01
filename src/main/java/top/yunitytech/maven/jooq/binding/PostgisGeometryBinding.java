@@ -19,7 +19,6 @@ import org.postgresql.util.PGobject;
 import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
 import java.sql.Types;
-import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.logging.Level;
@@ -42,15 +41,8 @@ public class PostgisGeometryBinding implements Binding<Object, Geometry> {
     private static final int DEFAULT_TARGET_SRID = 4326;
     private static final int SRID_UNKNOWN = 0;
 
-    /**
-     * Cache for MathTransform objects to avoid repeated CRS lookups.
-     * Key: "sourceSRID->targetSRID", Value: MathTransform
-     */
     private static final ConcurrentMap<String, MathTransform> TRANSFORM_CACHE = new ConcurrentHashMap<>();
 
-    /**
-     * Target SRID for coordinate transformations. Can be customized via system property.
-     */
     private static final int TARGET_SRID = Integer.getInteger(
             "jooq.postgis.targetSrid", DEFAULT_TARGET_SRID);
 
@@ -60,18 +52,10 @@ public class PostgisGeometryBinding implements Binding<Object, Geometry> {
 
     private final int targetSrid;
 
-    /**
-     * Creates a binding with the default target SRID (4326).
-     */
     public PostgisGeometryBinding() {
         this.targetSrid = TARGET_SRID;
     }
 
-    /**
-     * Creates a binding with a custom target SRID.
-     *
-     * @param targetSrid the target SRID for transformations
-     */
     public PostgisGeometryBinding(int targetSrid) {
         this.targetSrid = targetSrid;
     }
@@ -79,16 +63,16 @@ public class PostgisGeometryBinding implements Binding<Object, Geometry> {
     @Override
     @NotNull
     public Converter<Object, Geometry> converter() {
-        return new GeometryConverter(targetSrid);
+        return GeometryConverter.INSTANCE;
     }
 
+    /**
+     * Pure type mapper: WKB hex String &harr; JTS Geometry.
+     * No SRID transformation — that is the Binding's responsibility.
+     */
     public static class GeometryConverter implements Converter<Object, Geometry> {
 
-        private final int targetSrid;
-
-        public GeometryConverter(int targetSrid) {
-            this.targetSrid = targetSrid;
-        }
+        public static final GeometryConverter INSTANCE = new GeometryConverter();
 
         @Override
         public Geometry from(Object databaseObject) {
@@ -97,14 +81,13 @@ public class PostgisGeometryBinding implements Binding<Object, Geometry> {
             }
             try {
                 String wkbHex = extractWkbHex(databaseObject);
-                WKBReader reader = new WKBReader();
-                return reader.read(WKBReader.hexToBytes(wkbHex));
+                return new WKBReader().read(WKBReader.hexToBytes(wkbHex));
             } catch (ParseException e) {
                 throw new RuntimeException("Error parsing geometry WKB from database object: " + databaseObject, e);
             }
         }
 
-        private String extractWkbHex(Object databaseObject) {
+        private static String extractWkbHex(Object databaseObject) {
             if (databaseObject instanceof PGobject) {
                 PGobject pgObj = (PGobject) databaseObject;
                 if ("geometry".equals(pgObj.getType())) {
@@ -120,8 +103,7 @@ public class PostgisGeometryBinding implements Binding<Object, Geometry> {
             if (userObject == null) {
                 return null;
             }
-            Geometry transformedGeom = transformGeometry(userObject, targetSrid);
-            return createPgObject(transformedGeom);
+            return toWkbHex(userObject);
         }
 
         @Override
@@ -156,11 +138,11 @@ public class PostgisGeometryBinding implements Binding<Object, Geometry> {
     @SuppressWarnings("try")
     public void set(BindingSetStatementContext<Geometry> ctx) throws SQLException {
         Geometry geom = ctx.value();
-        if (Objects.isNull(geom)) {
+        if (geom == null) {
             ctx.statement().setNull(ctx.index(), Types.NULL);
         } else {
-            Geometry transformedGeom = transformGeometry(geom, targetSrid);
-            ctx.statement().setString(ctx.index(), toWkbHex(transformedGeom));
+            Geometry transformed = transformGeometry(geom, targetSrid);
+            ctx.statement().setString(ctx.index(), toWkbHex(transformed));
         }
     }
 
@@ -186,14 +168,6 @@ public class PostgisGeometryBinding implements Binding<Object, Geometry> {
         throw new SQLFeatureNotSupportedException("SQLInput not supported");
     }
 
-    /**
-     * Transforms geometry to target SRID with caching for performance.
-     *
-     * @param geom   the geometry to transform
-     * @param target the target SRID
-     * @return transformed geometry
-     * @throws RuntimeException if transformation fails
-     */
     private static Geometry transformGeometry(Geometry geom, int target) {
         if (geom == null || geom.isEmpty()) {
             return geom;
@@ -203,7 +177,8 @@ public class PostgisGeometryBinding implements Binding<Object, Geometry> {
             return geom;
         }
         if (sourceSrid == SRID_UNKNOWN) {
-            throw new IllegalArgumentException("Cannot transform geometry with unknown SRID (0). Please set the SRID on the geometry before saving.");
+            throw new IllegalArgumentException(
+                    "Cannot transform geometry with unknown SRID (0). Please set the SRID on the geometry before saving.");
         }
 
         try {
@@ -226,52 +201,25 @@ public class PostgisGeometryBinding implements Binding<Object, Geometry> {
         }
     }
 
-    /**
-     * Gets a cached MathTransform or creates a new one.
-     */
     private static MathTransform getCachedTransform(int sourceSrid, int targetSrid) throws FactoryException {
         String key = sourceSrid + "->" + targetSrid;
-        return TRANSFORM_CACHE.computeIfAbsent(key, k -> {
-            try {
-                CoordinateReferenceSystem source = CRS.decode("EPSG:" + sourceSrid, true);
-                CoordinateReferenceSystem target = CRS.decode("EPSG:" + targetSrid, true);
-                return CRS.findMathTransform(source, target);
-            } catch (FactoryException e) {
-                throw new RuntimeException("Failed to create MathTransform for " + key, e);
-            }
-        });
+        MathTransform cached = TRANSFORM_CACHE.get(key);
+        if (cached != null) {
+            return cached;
+        }
+        CoordinateReferenceSystem source = CRS.decode("EPSG:" + sourceSrid, true);
+        CoordinateReferenceSystem target = CRS.decode("EPSG:" + targetSrid, true);
+        MathTransform transform = CRS.findMathTransform(source, target);
+        MathTransform existing = TRANSFORM_CACHE.putIfAbsent(key, transform);
+        return existing != null ? existing : transform;
     }
 
-    /**
-     * Converts geometry to WKB hex string with proper dimension handling.
-     */
     private static String toWkbHex(Geometry geom) {
         int dimension = getCoordinateDimension(geom);
         WKBWriter writer = new WKBWriter(dimension, true);
         return WKBWriter.toHex(writer.write(geom));
     }
 
-    /**
-     * Creates a PGobject from geometry.
-     */
-    private static PGobject createPgObject(Geometry geom) {
-        try {
-            PGobject pgObject = new PGobject();
-            pgObject.setType("geometry");
-            pgObject.setValue(toWkbHex(geom));
-            return pgObject;
-        } catch (SQLException e) {
-            throw new RuntimeException("Error creating PGobject", e);
-        }
-    }
-
-    /**
-     * Gets the coordinate dimension of the geometry (2, 3, or 4 for XY, XYZ, or XYZM).
-     * Only checks the first coordinate for efficiency.
-     *
-     * @param geom the geometry
-     * @return the coordinate dimension (2-4)
-     */
     private static int getCoordinateDimension(Geometry geom) {
         if (geom == null || geom.isEmpty()) {
             return 2;
@@ -288,14 +236,9 @@ public class PostgisGeometryBinding implements Binding<Object, Geometry> {
         if (!Double.isNaN(coord.z)) {
             dimension = 3;
         }
-        // Note: JTS Coordinate doesn't directly support M value.
-        // For XYZM support, consider using PostGIS coordinate classes
         return dimension;
     }
 
-    /**
-     * Gets the first non-empty geometry from a potentially nested geometry.
-     */
     private static Geometry getFirstGeometry(Geometry geom) {
         if (geom instanceof GeometryCollection) {
             GeometryCollection collection = (GeometryCollection) geom;
