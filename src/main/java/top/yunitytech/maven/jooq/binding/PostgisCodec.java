@@ -9,12 +9,31 @@ import org.postgresql.util.PGobject;
 import top.yunitytech.maven.jooq.binding.internal.DimensionAnalyzer;
 import top.yunitytech.maven.jooq.binding.internal.SpatialWkbPool;
 
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+
 /**
  * Dedicated spatial codec for PostgreSQL / PostGIS and JTS {@link Geometry}.
  * <p>
  * Handles bidirectional serialization and deserialization between database spatial formats
  * (EWKB Hex, PostGIS EWKT, standard WKT, byte[] WKB, {@link PGobject}) and JTS Geometry,
  * supporting 2D (XY), 3D (XYZ), 3DM (XYM), and 4D (XYZM) coordinate dimensions.
+ * <p>
+ * Dimension handling (since 1.0.5):
+ * <ul>
+ *     <li><b>Reading WKB/EWKB:</b> the coordinate dimension is derived from the type flags of every
+ *     leaf geometry in the byte stream (not just the outermost header), so WKB produced by
+ *     non-PostGIS tools whose collection headers under-declare dimension flags is still decoded
+ *     correctly instead of silently re-interpreting M values as Z. Leaf flags must be uniform —
+ *     dimension-heterogeneous input is rejected exactly like PostGIS rejects it.</li>
+ *     <li><b>NaN ordinates:</b> NaN is a legal PostGIS ordinate value, not a dimension signal.
+ *     Geometries read from or written to the database preserve NaN values verbatim; a Z (or M)
+ *     dimension is considered present when any coordinate carries a non-NaN value, or when the
+ *     sequence/flags declare it. See {@link DimensionAnalyzer} for the full rules.</li>
+ *     <li><b>Writing:</b> all dimensions serialize as big-endian EWKB Hex. M/ZM geometries are
+ *     written by a built-in EWKB writer because JTS {@link WKBWriter} cannot emit the M flag
+ *     (and JTS {@code WKTWriter} silently drops the M marker when all M values are NaN).</li>
+ * </ul>
  *
  * @author gaoyunfeng
  */
@@ -30,6 +49,11 @@ public final class PostgisCodec {
      */
     public static final GeometryFactory PACKED_GEOMETRY_FACTORY = SpatialWkbPool.PACKED_GEOMETRY_FACTORY;
 
+    private static final String MIXED_DIMENSION_ERROR_MESSAGE =
+            "Mixed-dimension geometry is not supported: geometry components have inconsistent coordinate dimensions (e.g. XY mixed with XYZ/XYM/XYZM).";
+
+    private static final int MAX_EXCEPTION_SNIPPET_LENGTH = 64;
+
     private PostgisCodec() {
         // Private constructor for static utility class
     }
@@ -40,7 +64,8 @@ public final class PostgisCodec {
      *
      * @param databaseObject raw object returned from JDBC/database
      * @return deserialized JTS Geometry, or {@code null} if databaseObject is null or blank
-     * @throws RuntimeException if parsing fails
+     * @throws RuntimeException     if parsing fails
+     * @throws IllegalArgumentException if the input declares inconsistent coordinate dimensions
      */
     public static Geometry from(Object databaseObject) {
         if (databaseObject == null) {
@@ -78,48 +103,43 @@ public final class PostgisCodec {
             return fromWkt(text);
 
         } catch (ParseException e) {
-            throw new RuntimeException("Error parsing spatial data from database object: " + databaseObject, e);
+            throw new RuntimeException("Error parsing spatial data from database object (" + describe(databaseObject) + "): " + e.getMessage(), e);
         }
     }
 
     /**
      * Deserializes binary WKB/EWKB bytes into a JTS {@link Geometry}.
-     * Preserves SRID and handles XY, XYZ, XYM, and XYZM coordinate dimensions.
+     * <p>
+     * The coordinate dimension is determined by scanning the type flags of <em>every leaf
+     * geometry</em> in the stream (JTS reads each element by its own flags, and non-PostGIS
+     * producers sometimes write collection headers without dimension flags). All leaf flags
+     * must agree; dimension-heterogeneous input is rejected.
      *
-     * @param bytes binary WKB or EWKB data
+     * @param bytes binary WKB or EWKB data (little- or big-endian, EWKB or ISO WKB type codes)
      * @return deserialized JTS Geometry, or {@code null} if bytes is null or empty
-     * @throws ParseException if binary data is corrupted
-     * @throws IllegalArgumentException if geometry components have mixed coordinate dimensions
+     * @throws ParseException            if binary data is corrupted
+     * @throws IllegalArgumentException  if leaf geometries declare inconsistent dimensions,
+     *                                   or the stream is malformed / uses an unsupported geometry type
      */
     public static Geometry fromWkb(byte[] bytes) throws ParseException {
         if (bytes == null || bytes.length == 0) {
             return null;
         }
-        if (bytes.length < 5) {
-            Geometry g = SpatialWkbPool.getWkbReader().read(bytes);
-            validateDimensionConsistency(g);
-            return g;
-        }
-        boolean littleEndian = bytes[0] == 1;
-        int type = littleEndian
-                ? (bytes[1] & 0xFF) | ((bytes[2] & 0xFF) << 8) | ((bytes[3] & 0xFF) << 16) | ((bytes[4] & 0xFF) << 24)
-                : ((bytes[1] & 0xFF) << 24) | ((bytes[2] & 0xFF) << 16) | ((bytes[3] & 0xFF) << 8) | (bytes[4] & 0xFF);
-        boolean hasZ = (type & 0x80000000) != 0 || ((type & 0xFFFF) / 1000 == 1 || (type & 0xFFFF) / 1000 == 3);
-        boolean hasM = (type & 0x40000000) != 0 || ((type & 0xFFFF) / 1000 == 2 || (type & 0xFFFF) / 1000 == 3);
+        WkbDimensionProfile profile = WkbScanner.scan(bytes);
 
         Geometry geom;
-        if (!hasM) {
+        if (!profile.hasM) {
             // 2D (XY) or 3D (XYZ)
             geom = SpatialWkbPool.getWkbReader().read(bytes);
-        } else if (!hasZ) {
-            // 3DM (XYM): WKBReader reads M into the Z slot of standard Coordinate.
-            // Remap coordinates to CoordinateXYM without losing empty components.
+        } else if (!profile.hasZ) {
+            // 3DM (XYM): JTS WKBReader reads the M value into ordinate slot 2
+            // (the Z slot of the standard Coordinate); remap to CoordinateXYM.
             Geometry raw = SpatialWkbPool.getWkbReader().read(bytes);
-            geom = remapCoordinates(raw, GEOMETRY_FACTORY, true);
+            geom = remapCoordinates(raw, GEOMETRY_FACTORY, false, true);
         } else {
-            // 4D (XYZM): Read with PACKED_GEOMETRY_FACTORY and remap to CoordinateXYZM
+            // 4D (XYZM): read with the packed factory (measures metadata preserved) and remap
             Geometry raw = SpatialWkbPool.getPackedWkbReader().read(bytes);
-            geom = remapCoordinates(raw, GEOMETRY_FACTORY, false);
+            geom = remapCoordinates(raw, GEOMETRY_FACTORY, true, true);
         }
 
         validateDimensionConsistency(geom);
@@ -131,8 +151,8 @@ public final class PostgisCodec {
      *
      * @param text WKT or EWKT text (e.g. {@code "SRID=4326;POINT(1 2)"} or {@code "POINT(1 2)"})
      * @return deserialized JTS Geometry
-     * @throws ParseException if WKT format is invalid
-     * @throws IllegalArgumentException if geometry components have mixed coordinate dimensions
+     * @throws ParseException           if WKT format is invalid
+     * @throws IllegalArgumentException if geometry components have inconsistent coordinate dimensions
      */
     public static Geometry fromWkt(String text) throws ParseException {
         if (text == null || text.trim().isEmpty()) {
@@ -160,14 +180,12 @@ public final class PostgisCodec {
     }
 
     /**
-     * Converts a JTS Geometry to an optimal representation for PostgreSQL:
-     * <ul>
-     *     <li>If the geometry has Measure (M) dimension (XYM or XYZM), outputs PostGIS EWKT (e.g. {@code SRID=4326;POINT ZM(1 2 3 4)}).</li>
-     *     <li>Otherwise (XY or XYZ), outputs PostGIS EWKB Hex string.</li>
-     * </ul>
+     * Converts a JTS Geometry to its PostgreSQL representation: big-endian EWKB Hex string,
+     * for all coordinate dimensions (XY, XYZ, XYM, XYZM). SRID is embedded when non-zero.
+     * NaN ordinate values are preserved bit-exactly.
      *
      * @param geom the geometry to serialize
-     * @return spatial representation string
+     * @return hex EWKB string
      * @throws IllegalArgumentException if the geometry has mixed coordinate dimensions
      */
     public static String toSpatialRepresentation(Geometry geom) {
@@ -185,16 +203,12 @@ public final class PostgisCodec {
         }
 
         if (result.hasM()) {
-            // JTS WKBWriter only supports 2D/3D (Z only). For M/ZM coordinates,
-            // PostGIS natively parses EWKT format via geometry_in / geography_in.
-            String wkt = fixWktEmptySpacing(SpatialWkbPool.getWktWriter4D().write(geom));
-            if (geom.getSRID() > 0) {
-                return "SRID=" + geom.getSRID() + ";" + wkt;
-            }
-            return wkt;
+            // JTS WKBWriter cannot emit the M flag, and WKTWriter(4) silently drops the M marker
+            // when all M values are NaN — write dimensioned EWKB ourselves instead.
+            return WKBWriter.toHex(writeEwkb(geom, result.hasZ(), true));
         }
 
-        // Standard 2D or 3D (Z) geometry -> EWKB Hex
+        // Standard 2D or 3D (Z) geometry -> EWKB Hex via JTS
         WKBWriter writer = SpatialWkbPool.getWkbWriter(result.getWkbOutputDimension());
         return WKBWriter.toHex(writer.write(geom));
     }
@@ -213,10 +227,10 @@ public final class PostgisCodec {
     }
 
     /**
-     * Validates that all non-empty coordinates within the geometry have consistent dimensions.
+     * Validates that all geometry components resolve to a consistent coordinate dimension.
      *
      * @param geom geometry to validate
-     * @throws IllegalArgumentException if geometry components have mixed coordinate dimensions
+     * @throws IllegalArgumentException if geometry components have inconsistent coordinate dimensions
      */
     public static void validateDimensionConsistency(Geometry geom) {
         DimensionAnalyzer.validateDimensionConsistency(geom);
@@ -250,11 +264,312 @@ public final class PostgisCodec {
         return true;
     }
 
+    // =========================================================================
+    // WKB dimension scanning
+    // =========================================================================
+
+    /** Immutable leaf-flag dimension profile of a WKB byte stream. */
+    private static final class WkbDimensionProfile {
+        final boolean hasZ;
+        final boolean hasM;
+
+        WkbDimensionProfile(boolean hasZ, boolean hasM) {
+            this.hasZ = hasZ;
+            this.hasM = hasM;
+        }
+    }
+
     /**
-     * Recursively remaps coordinate sequences of a geometry to CoordinateXYM or CoordinateXYZM,
-     * preserving all geometry types, nested collections, and empty geometries.
+     * Walks the type-flag headers of a WKB/EWKB stream (coordinate payloads are skipped without
+     * being decoded) and computes the uniform dimension profile declared by all leaf geometries.
+     * Collection/multi headers are ignored for profiling — only leaves count — because ISO WKB
+     * allows collection headers to under-declare the dimension of their children, and JTS itself
+     * parses every element by its own flags.
      */
-    private static Geometry remapCoordinates(Geometry g, GeometryFactory gf, boolean isXYM) {
+    private static final class WkbScanner {
+        private static final int TYPE_POINT = 1;
+        private static final int TYPE_LINESTRING = 2;
+        private static final int TYPE_POLYGON = 3;
+        private static final int TYPE_MULTIPOINT = 4;
+        private static final int TYPE_MULTILINESTRING = 5;
+        private static final int TYPE_MULTIPOLYGON = 6;
+        private static final int TYPE_GEOMETRYCOLLECTION = 7;
+
+        private final byte[] bytes;
+        private int pos;
+        private boolean hasZ;
+        private boolean hasM;
+        private boolean seenLeaf;
+
+        private WkbScanner(byte[] bytes) {
+            this.bytes = bytes;
+        }
+
+        static WkbDimensionProfile scan(byte[] bytes) {
+            WkbScanner scanner = new WkbScanner(bytes);
+            scanner.scanGeometry();
+            return new WkbDimensionProfile(scanner.hasZ, scanner.hasM);
+        }
+
+        private void scanGeometry() {
+            expect(5);
+            int byteOrder = bytes[pos] & 0xFF;
+            if (byteOrder != 0 && byteOrder != 1) {
+                throw new IllegalArgumentException(malformed("invalid byte order marker " + byteOrder));
+            }
+            long type = uint32(pos + 1, byteOrder);
+            pos += 5;
+
+            int geometryType = (int) ((type & 0xFFFFL) % 1000);
+            long isoDimension = (type & 0xFFFFL) / 1000;
+            boolean z = (type & 0x80000000L) != 0 || isoDimension == 1 || isoDimension == 3;
+            boolean m = (type & 0x40000000L) != 0 || isoDimension == 2 || isoDimension == 3;
+            if ((type & 0x20000000L) != 0) {
+                // EWKB SRID flag: 4 bytes follow the type
+                expect(4);
+                pos += 4;
+            }
+            int dimension = 2 + (z ? 1 : 0) + (m ? 1 : 0);
+
+            switch (geometryType) {
+                case TYPE_POINT:
+                    registerLeaf(z, m);
+                    expect(8L * dimension);
+                    pos += 8 * dimension;
+                    break;
+                case TYPE_LINESTRING:
+                    registerLeaf(z, m);
+                    skipCoordinateArray(byteOrder, dimension);
+                    break;
+                case TYPE_POLYGON:
+                    registerLeaf(z, m);
+                    int ringCount = int32(byteOrder);
+                    for (int i = 0; i < ringCount; i++) {
+                        skipCoordinateArray(byteOrder, dimension);
+                    }
+                    break;
+                case TYPE_MULTIPOINT:
+                case TYPE_MULTILINESTRING:
+                case TYPE_MULTIPOLYGON:
+                case TYPE_GEOMETRYCOLLECTION:
+                    int childCount = int32(byteOrder);
+                    for (int i = 0; i < childCount; i++) {
+                        scanGeometry();
+                    }
+                    break;
+                default:
+                    throw new IllegalArgumentException(
+                            "Unsupported WKB geometry type code: " + geometryType);
+            }
+        }
+
+        private void registerLeaf(boolean z, boolean m) {
+            if (seenLeaf && (z != hasZ || m != hasM)) {
+                throw new IllegalArgumentException(MIXED_DIMENSION_ERROR_MESSAGE);
+            }
+            seenLeaf = true;
+            hasZ = z;
+            hasM = m;
+        }
+
+        private void skipCoordinateArray(int byteOrder, int dimension) {
+            long count = int32(byteOrder) & 0xFFFFFFFFL;
+            expect(count * 8L * dimension);
+            pos += (int) (count * 8L * dimension);
+        }
+
+        private long uint32(int offset, int byteOrder) {
+            expectAt(offset, 4);
+            if (byteOrder == 1) {
+                return (bytes[offset] & 0xFFL)
+                        | ((bytes[offset + 1] & 0xFFL) << 8)
+                        | ((bytes[offset + 2] & 0xFFL) << 16)
+                        | ((bytes[offset + 3] & 0xFFL) << 24);
+            }
+            return ((bytes[offset] & 0xFFL) << 24)
+                    | ((bytes[offset + 1] & 0xFFL) << 16)
+                    | ((bytes[offset + 2] & 0xFFL) << 8)
+                    | (bytes[offset + 3] & 0xFFL);
+        }
+
+        private int int32(int byteOrder) {
+            expect(4);
+            int value = (int) uint32(pos, byteOrder);
+            pos += 4;
+            return value;
+        }
+
+        private void expect(long needed) {
+            expectAt(pos, needed);
+        }
+
+        private void expectAt(int offset, long needed) {
+            if (offset < 0 || needed < 0 || bytes.length - offset < needed) {
+                throw new IllegalArgumentException(malformed("truncated stream"));
+            }
+        }
+
+        private static String malformed(String reason) {
+            return "Malformed WKB/EWKB input: " + reason;
+        }
+    }
+
+    // =========================================================================
+    // Dimensioned EWKB writing (XYM / XYZM)
+    // =========================================================================
+
+    /**
+     * Writes big-endian EWKB with explicit Z/M flags for geometries whose dimension profile
+     * involves M. Coordinates with fewer ordinates than the target profile are padded with NaN.
+     * The SRID is embedded at the root geometry only, matching JTS {@link WKBWriter} behaviour.
+     */
+    private static byte[] writeEwkb(Geometry geom, boolean hasZ, boolean hasM) {
+        int size = ewkbSize(geom, hasZ, hasM, true);
+        ByteBuffer buffer = ByteBuffer.allocate(size).order(ByteOrder.BIG_ENDIAN);
+        writeEwkbGeometry(geom, hasZ, hasM, buffer, true);
+        if (buffer.position() != size) {
+            throw new IllegalStateException("EWKB size pre-computation mismatch");
+        }
+        return buffer.array();
+    }
+
+    private static void writeEwkbGeometry(Geometry geom, boolean hasZ, boolean hasM, ByteBuffer buffer, boolean root) {
+        int geometryType = ewkbGeometryType(geom);
+        int flags = geometryType
+                | (hasZ ? 0x80000000 : 0)
+                | (hasM ? 0x40000000 : 0)
+                | (root && geom.getSRID() != 0 ? 0x20000000 : 0);
+        buffer.put((byte) 0); // big-endian marker
+        buffer.putInt(flags);
+        if (root && geom.getSRID() != 0) {
+            buffer.putInt(geom.getSRID());
+        }
+
+        if (geom instanceof Point) {
+            CoordinateSequence cs = ((Point) geom).getCoordinateSequence();
+            int n = cs == null ? 0 : cs.size();
+            if (n == 0) {
+                // EMPTY points still carry one (NaN-filled) coordinate slot in WKB
+                writeEwkbCoordinate(buffer, null, 0, hasZ, hasM);
+            } else {
+                for (int i = 0; i < n; i++) {
+                    writeEwkbCoordinate(buffer, cs, i, hasZ, hasM);
+                }
+            }
+        } else if (geom instanceof LineString) {
+            CoordinateSequence cs = ((LineString) geom).getCoordinateSequence();
+            buffer.putInt(cs.size());
+            for (int i = 0; i < cs.size(); i++) {
+                writeEwkbCoordinate(buffer, cs, i, hasZ, hasM);
+            }
+        } else if (geom instanceof Polygon) {
+            Polygon polygon = (Polygon) geom;
+            buffer.putInt(1 + polygon.getNumInteriorRing());
+            writeEwkbRing(polygon.getExteriorRing(), hasZ, hasM, buffer);
+            for (int i = 0; i < polygon.getNumInteriorRing(); i++) {
+                writeEwkbRing(polygon.getInteriorRingN(i), hasZ, hasM, buffer);
+            }
+        } else if (geom instanceof MultiPoint) {
+            writeEwkbChildren(((MultiPoint) geom), hasZ, hasM, buffer);
+        } else if (geom instanceof MultiLineString) {
+            writeEwkbChildren(((MultiLineString) geom), hasZ, hasM, buffer);
+        } else if (geom instanceof MultiPolygon) {
+            writeEwkbChildren(((MultiPolygon) geom), hasZ, hasM, buffer);
+        } else if (geom instanceof GeometryCollection) {
+            writeEwkbChildren((GeometryCollection) geom, hasZ, hasM, buffer);
+        } else {
+            throw new IllegalArgumentException("Unsupported geometry type: " + geom.getClass().getName());
+        }
+    }
+
+    private static void writeEwkbChildren(GeometryCollection collection, boolean hasZ, boolean hasM, ByteBuffer buffer) {
+        buffer.putInt(collection.getNumGeometries());
+        for (int i = 0; i < collection.getNumGeometries(); i++) {
+            writeEwkbGeometry(collection.getGeometryN(i), hasZ, hasM, buffer, false);
+        }
+    }
+
+    private static void writeEwkbRing(LineString ring, boolean hasZ, boolean hasM, ByteBuffer buffer) {
+        CoordinateSequence cs = ring.getCoordinateSequence();
+        buffer.putInt(cs.size());
+        for (int i = 0; i < cs.size(); i++) {
+            writeEwkbCoordinate(buffer, cs, i, hasZ, hasM);
+        }
+    }
+
+    private static void writeEwkbCoordinate(ByteBuffer buffer, CoordinateSequence cs, int index, boolean hasZ, boolean hasM) {
+        buffer.putDouble(ordinate(cs, index, 0));
+        buffer.putDouble(ordinate(cs, index, 1));
+        if (hasZ) {
+            buffer.putDouble(ordinate(cs, index, 2));
+        }
+        if (hasM) {
+            // M is always the last ordinate when present (x, y, [z], m)
+            buffer.putDouble(cs == null ? Double.NaN : ordinate(cs, index, cs.getDimension() - 1));
+        }
+    }
+
+    private static double ordinate(CoordinateSequence cs, int index, int ordinateIndex) {
+        if (cs == null || ordinateIndex < 0 || ordinateIndex >= cs.getDimension()) {
+            return Double.NaN;
+        }
+        return cs.getOrdinate(index, ordinateIndex);
+    }
+
+    private static int ewkbGeometryType(Geometry geom) {
+        if (geom instanceof Point) return 1;
+        if (geom instanceof LineString) return 2; // includes LinearRing inside polygons
+        if (geom instanceof Polygon) return 3;
+        if (geom instanceof MultiPoint) return 4;
+        if (geom instanceof MultiLineString) return 5;
+        if (geom instanceof MultiPolygon) return 6;
+        if (geom instanceof GeometryCollection) return 7;
+        throw new IllegalArgumentException("Unsupported geometry type: " + geom.getClass().getName());
+    }
+
+    private static int ewkbSize(Geometry geom, boolean hasZ, boolean hasM, boolean root) {
+        int dimension = 2 + (hasZ ? 1 : 0) + (hasM ? 1 : 0);
+        long coordinateSize = 8L * dimension;
+        int self = 5 + (root && geom.getSRID() != 0 ? 4 : 0);
+
+        if (geom instanceof Point) {
+            return (int) (self + coordinateSize);
+        }
+        if (geom instanceof LineString) {
+            CoordinateSequence cs = ((LineString) geom).getCoordinateSequence();
+            return (int) (self + 4 + cs.size() * coordinateSize);
+        }
+        if (geom instanceof Polygon) {
+            Polygon polygon = (Polygon) geom;
+            long total = self + 4;
+            total += 4 + polygon.getExteriorRing().getCoordinateSequence().size() * coordinateSize;
+            for (int i = 0; i < polygon.getNumInteriorRing(); i++) {
+                total += 4 + polygon.getInteriorRingN(i).getCoordinateSequence().size() * coordinateSize;
+            }
+            return (int) total;
+        }
+        if (geom instanceof MultiPoint || geom instanceof MultiLineString
+                || geom instanceof MultiPolygon || geom instanceof GeometryCollection) {
+            GeometryCollection collection = (GeometryCollection) geom;
+            long total = self + 4;
+            for (int i = 0; i < collection.getNumGeometries(); i++) {
+                total += ewkbSize(collection.getGeometryN(i), hasZ, hasM, false);
+            }
+            return (int) total;
+        }
+        throw new IllegalArgumentException("Unsupported geometry type: " + geom.getClass().getName());
+    }
+
+    // =========================================================================
+    // Coordinate remapping (WKB read normalization)
+    // =========================================================================
+
+    /**
+     * Recursively remaps coordinate sequences of a geometry to the target dimension profile
+     * ({@link Coordinate}, {@link CoordinateXYM}, or {@link CoordinateXYZM}), preserving all
+     * geometry types, nested collections, and empty geometries.
+     */
+    private static Geometry remapCoordinates(Geometry g, GeometryFactory gf, boolean hasZ, boolean hasM) {
         if (g == null) {
             return null;
         }
@@ -264,45 +579,45 @@ public final class PostgisCodec {
         if (g.isEmpty()) {
             result = g.copy();
         } else if (g instanceof Point) {
-            CoordinateSequence cs = remapSequence(((Point) g).getCoordinateSequence(), isXYM);
+            CoordinateSequence cs = remapSequence(((Point) g).getCoordinateSequence(), hasZ, hasM);
             result = gf.createPoint(cs);
         } else if (g instanceof LineString) {
-            CoordinateSequence cs = remapSequence(((LineString) g).getCoordinateSequence(), isXYM);
+            CoordinateSequence cs = remapSequence(((LineString) g).getCoordinateSequence(), hasZ, hasM);
             result = (g instanceof LinearRing) ? gf.createLinearRing(cs) : gf.createLineString(cs);
         } else if (g instanceof Polygon) {
             Polygon p = (Polygon) g;
-            LinearRing shell = (LinearRing) remapCoordinates(p.getExteriorRing(), gf, isXYM);
+            LinearRing shell = (LinearRing) remapCoordinates(p.getExteriorRing(), gf, hasZ, hasM);
             LinearRing[] holes = new LinearRing[p.getNumInteriorRing()];
             for (int i = 0; i < p.getNumInteriorRing(); i++) {
-                holes[i] = (LinearRing) remapCoordinates(p.getInteriorRingN(i), gf, isXYM);
+                holes[i] = (LinearRing) remapCoordinates(p.getInteriorRingN(i), gf, hasZ, hasM);
             }
             result = gf.createPolygon(shell, holes);
         } else if (g instanceof MultiPoint) {
             MultiPoint mp = (MultiPoint) g;
             Point[] points = new Point[mp.getNumGeometries()];
             for (int i = 0; i < mp.getNumGeometries(); i++) {
-                points[i] = (Point) remapCoordinates(mp.getGeometryN(i), gf, isXYM);
+                points[i] = (Point) remapCoordinates(mp.getGeometryN(i), gf, hasZ, hasM);
             }
             result = gf.createMultiPoint(points);
         } else if (g instanceof MultiLineString) {
             MultiLineString mls = (MultiLineString) g;
             LineString[] lines = new LineString[mls.getNumGeometries()];
             for (int i = 0; i < mls.getNumGeometries(); i++) {
-                lines[i] = (LineString) remapCoordinates(mls.getGeometryN(i), gf, isXYM);
+                lines[i] = (LineString) remapCoordinates(mls.getGeometryN(i), gf, hasZ, hasM);
             }
             result = gf.createMultiLineString(lines);
         } else if (g instanceof MultiPolygon) {
             MultiPolygon mp = (MultiPolygon) g;
             Polygon[] polys = new Polygon[mp.getNumGeometries()];
             for (int i = 0; i < mp.getNumGeometries(); i++) {
-                polys[i] = (Polygon) remapCoordinates(mp.getGeometryN(i), gf, isXYM);
+                polys[i] = (Polygon) remapCoordinates(mp.getGeometryN(i), gf, hasZ, hasM);
             }
             result = gf.createMultiPolygon(polys);
         } else if (g instanceof GeometryCollection) {
             GeometryCollection gc = (GeometryCollection) g;
             Geometry[] geoms = new Geometry[gc.getNumGeometries()];
             for (int i = 0; i < gc.getNumGeometries(); i++) {
-                geoms[i] = remapCoordinates(gc.getGeometryN(i), gf, isXYM);
+                geoms[i] = remapCoordinates(gc.getGeometryN(i), gf, hasZ, hasM);
             }
             result = gf.createGeometryCollection(geoms);
         } else {
@@ -313,23 +628,47 @@ public final class PostgisCodec {
         return result;
     }
 
-    private static CoordinateSequence remapSequence(CoordinateSequence cs, boolean isXYM) {
+    private static CoordinateSequence remapSequence(CoordinateSequence cs, boolean hasZ, boolean hasM) {
         if (cs == null || cs.size() == 0) {
             return cs;
         }
-        if (isXYM) {
+        if (hasZ && hasM) {
+            CoordinateXYZM[] coords = new CoordinateXYZM[cs.size()];
+            for (int i = 0; i < cs.size(); i++) {
+                coords[i] = new CoordinateXYZM(ordinate(cs, i, 0), ordinate(cs, i, 1), ordinate(cs, i, 2), ordinate(cs, i, cs.getDimension() - 1));
+            }
+            return new CoordinateArraySequence(coords);
+        } else if (hasM) {
             CoordinateXYM[] coords = new CoordinateXYM[cs.size()];
             for (int i = 0; i < cs.size(); i++) {
-                coords[i] = new CoordinateXYM(cs.getX(i), cs.getY(i), cs.getZ(i));
+                // JTS read the M value into the last ordinate (slot 2 for 3-ordinate input)
+                coords[i] = new CoordinateXYM(ordinate(cs, i, 0), ordinate(cs, i, 1), ordinate(cs, i, cs.getDimension() - 1));
+            }
+            return new CoordinateArraySequence(coords);
+        } else if (hasZ) {
+            Coordinate[] coords = new Coordinate[cs.size()];
+            for (int i = 0; i < cs.size(); i++) {
+                coords[i] = new Coordinate(ordinate(cs, i, 0), ordinate(cs, i, 1), ordinate(cs, i, 2));
             }
             return new CoordinateArraySequence(coords);
         } else {
-            CoordinateXYZM[] coords = new CoordinateXYZM[cs.size()];
+            Coordinate[] coords = new Coordinate[cs.size()];
             for (int i = 0; i < cs.size(); i++) {
-                coords[i] = new CoordinateXYZM(cs.getX(i), cs.getY(i), cs.getZ(i), cs.getM(i));
+                coords[i] = new Coordinate(ordinate(cs, i, 0), ordinate(cs, i, 1));
             }
             return new CoordinateArraySequence(coords);
         }
+    }
+
+    /** Short, overflow-safe description of a database object for error messages. */
+    private static String describe(Object databaseObject) {
+        if (databaseObject instanceof byte[]) {
+            return "byte[" + ((byte[]) databaseObject).length + "]";
+        }
+        String text = String.valueOf(databaseObject);
+        return text.length() <= MAX_EXCEPTION_SNIPPET_LENGTH
+                ? text
+                : text.substring(0, MAX_EXCEPTION_SNIPPET_LENGTH) + "...(" + text.length() + " chars)";
     }
 
     /**

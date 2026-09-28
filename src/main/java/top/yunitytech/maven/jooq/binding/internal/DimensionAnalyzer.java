@@ -1,10 +1,9 @@
 package top.yunitytech.maven.jooq.binding.internal;
 
-import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.CoordinateSequence;
 import org.locationtech.jts.geom.CoordinateSequenceFilter;
 import org.locationtech.jts.geom.Geometry;
-import org.locationtech.jts.geom.Point;
+import org.locationtech.jts.geom.GeometryCollection;
 
 import java.io.Serializable;
 import java.util.Objects;
@@ -12,8 +11,22 @@ import java.util.Objects;
 /**
  * Robust spatial coordinate dimension detector and validator.
  * <p>
- * Replaces the fragile, allocation-heavy DimensionFilter with an optimized analyzer
- * supporting 2D (XY), 3D (XYZ), 3DM (XYM), 4D (XYZM), EMPTY, and MIXED coordinate dimensions.
+ * Supports 2D (XY), 3D (XYZ), 3DM (XYM), 4D (XYZM), EMPTY, and MIXED coordinate dimensions.
+ * <p>
+ * Dimension detection rules (since 1.0.5):
+ * <ul>
+ *     <li>Sequences that carry explicit dimension metadata (typed {@code CoordinateXYM}/{@code CoordinateXYZM}
+ *     arrays, packed sequences with measures) are trusted as-is: the declared dimension wins over ordinate values.</li>
+ *     <li>Plain 3-ordinate sequences (the JTS default for {@code Coordinate} arrays) cannot declare intent,
+ *     so Z presence is value-based: if <em>any</em> coordinate has a non-NaN Z the geometry is XYZ;
+ *     NaN values are legal PostGIS ordinates and are preserved verbatim (OR semantics).</li>
+ *     <li>4-ordinate sequences without measures metadata are interpreted as XYZM.</li>
+ *     <li>Within a single (non-collection) geometry, sequences are combined with OR semantics —
+ *     partial NaN patterns are not "mixed dimension".</li>
+ *     <li>Inside a {@link GeometryCollection} all non-empty siblings must resolve to the same dimension
+ *     profile; otherwise the geometry is MIXED and rejected. This mirrors PostGIS, which rejects
+ *     dimension-heterogeneous collections ({@code Dimensions mismatch in lwcollection}).</li>
+ * </ul>
  *
  * @author gaoyunfeng
  */
@@ -21,6 +34,9 @@ public final class DimensionAnalyzer {
 
     private static final String MIXED_DIMENSION_ERROR_MESSAGE =
             "Mixed-dimension geometry is not supported: geometry components have inconsistent coordinate dimensions (e.g. XY mixed with XYZ/XYM/XYZM).";
+
+    private static final String UNSUPPORTED_DIMENSION_ERROR_TEMPLATE =
+            "Unsupported coordinate dimension %d in coordinate sequence (supported: 2-4).";
 
     private DimensionAnalyzer() {
         // Utility class
@@ -167,41 +183,49 @@ public final class DimensionAnalyzer {
      *
      * @param geom geometry to inspect
      * @return analysis result describing coordinate dimension, presence of Z/M, and consistency
+     * @throws IllegalArgumentException if a coordinate sequence declares an unsupported dimension (not 2-4)
      */
     public static Result analyze(Geometry geom) {
         if (geom == null || geom.isEmpty()) {
             return Result.EMPTY;
         }
-
-        // Fast-path for single point
-        if (geom instanceof Point) {
-            Coordinate c = geom.getCoordinate();
-            if (c == null) {
-                return Result.EMPTY;
-            }
-            boolean hasZ = !Double.isNaN(c.getZ());
-            boolean hasM = !Double.isNaN(c.getM());
-            return Result.of(hasZ, hasM);
+        if (geom instanceof GeometryCollection) {
+            return analyzeCollection((GeometryCollection) geom);
         }
-
-        // Deep inspection across sequences
         DimensionFilter filter = new DimensionFilter();
         geom.apply(filter);
-
-        if (filter.isMixed()) {
-            return Result.MIXED;
-        }
-        if (filter.isEmpty()) {
+        if (!filter.hasSequence()) {
             return Result.EMPTY;
         }
         return Result.of(filter.hasZ(), filter.hasM());
     }
 
     /**
-     * Validates that all coordinates within the geometry have consistent dimensions.
+     * Collections (including nested ones) require every non-empty child to resolve to the same
+     * dimension profile, matching PostGIS behaviour for collections.
+     */
+    private static Result analyzeCollection(GeometryCollection gc) {
+        Result profile = null;
+        for (int i = 0; i < gc.getNumGeometries(); i++) {
+            Result child = analyze(gc.getGeometryN(i));
+            if (child.isEmpty()) {
+                continue;
+            }
+            if (profile == null) {
+                profile = child;
+            } else if (profile.hasZ() != child.hasZ() || profile.hasM() != child.hasM()) {
+                return Result.MIXED;
+            }
+        }
+        return profile != null ? profile : Result.EMPTY;
+    }
+
+    /**
+     * Validates that all geometry components resolve to a consistent coordinate dimension.
      *
      * @param geom geometry to validate
-     * @throws IllegalArgumentException if geometry components have mixed coordinate dimensions
+     * @throws IllegalArgumentException if collection siblings have inconsistent coordinate dimensions,
+     *                                  or if a coordinate sequence declares an unsupported dimension
      */
     public static void validateDimensionConsistency(Geometry geom) {
         if (geom == null || geom.isEmpty()) {
@@ -214,35 +238,59 @@ public final class DimensionAnalyzer {
     }
 
     /**
-     * Internal sequence filter used for deep traversal across complex/nested geometries.
+     * Sequence filter computing the combined (OR) dimension profile of all sequences of a single
+     * non-collection geometry. Each sequence is evaluated once, at its first coordinate.
+     * <p>
+     * Since 1.0.5 this filter implements OR semantics within one geometry: partially-NaN ordinate
+     * patterns are treated as "the dimension is present, NaN values are preserved", aligning with
+     * PostGIS which accepts NaN as a legal ordinate value.
      */
     public static class DimensionFilter implements CoordinateSequenceFilter {
-        private Boolean hasZ = null;
-        private Boolean hasM = null;
-        private boolean mixed = false;
+        private boolean hasZ;
+        private boolean hasM;
+        private boolean hasSequence;
 
         public DimensionFilter() {
         }
 
         @Override
         public void filter(CoordinateSequence seq, int i) {
-            if (mixed || seq.size() == 0) {
+            if (i != 0) {
+                // evaluate each sequence exactly once, at its first coordinate
                 return;
             }
-            Coordinate c = seq.getCoordinate(i);
-            boolean z = !Double.isNaN(c.getZ());
-            boolean m = !Double.isNaN(c.getM());
-            if (hasZ == null) {
-                hasZ = z;
-                hasM = m;
-            } else if (hasZ != z || hasM != m) {
-                mixed = true;
+            hasSequence = true;
+            int dimension = seq.getDimension();
+            if (dimension < 2 || dimension > 4) {
+                throw new IllegalArgumentException(String.format(UNSUPPORTED_DIMENSION_ERROR_TEMPLATE, dimension));
+            }
+            if (dimension == 2) {
+                return;
+            }
+            if (dimension >= 4) {
+                // 4-ordinate sequences are XYZM regardless of measures metadata
+                hasZ = true;
+                hasM = true;
+                return;
+            }
+            int measures = seq.getMeasures();
+            if (measures > 0) {
+                // typed XYM sequence: metadata wins over values
+                hasM = true;
+                return;
+            }
+            // plain 3-ordinate sequence: Z presence is value-based (OR across coordinates)
+            for (int k = 0; k < seq.size(); k++) {
+                if (!Double.isNaN(seq.getOrdinate(k, 2))) {
+                    hasZ = true;
+                    break;
+                }
             }
         }
 
         @Override
         public boolean isDone() {
-            return mixed;
+            return false;
         }
 
         @Override
@@ -250,20 +298,28 @@ public final class DimensionAnalyzer {
             return false;
         }
 
-        public boolean isMixed() {
-            return mixed;
-        }
-
         public boolean hasZ() {
-            return hasZ != null && hasZ;
+            return hasZ;
         }
 
         public boolean hasM() {
-            return hasM != null && hasM;
+            return hasM;
+        }
+
+        public boolean hasSequence() {
+            return hasSequence;
+        }
+
+        /**
+         * Kept for backward compatibility; single-geometry profiles are never mixed
+         * (collection strictness is handled by {@link #analyze(Geometry)}).
+         */
+        public boolean isMixed() {
+            return false;
         }
 
         public boolean isEmpty() {
-            return hasZ == null;
+            return !hasSequence;
         }
     }
 }

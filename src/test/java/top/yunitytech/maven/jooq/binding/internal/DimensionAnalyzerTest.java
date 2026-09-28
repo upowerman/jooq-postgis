@@ -211,8 +211,8 @@ class DimensionAnalyzerTest {
         }
 
         @Test
-        @DisplayName("LineString with mixed coordinates")
-        void testLineStringWithMixedCoordinates() {
+        @DisplayName("LineString with partial NaN Z resolves to XYZ (OR semantics, NaN preserved)")
+        void testLineStringWithPartialNanZ() {
             Coordinate[] coords = new Coordinate[]{
                     new Coordinate(1, 2),
                     new Coordinate(3, 4, 5)
@@ -220,11 +220,40 @@ class DimensionAnalyzerTest {
             LineString ls = gf.createLineString(coords);
 
             DimensionAnalyzer.Result result = DimensionAnalyzer.analyze(ls);
-            assertThat(result.isMixed()).isTrue();
+            assertThat(result.isMixed()).isFalse();
+            assertThat(result.getDimension()).isEqualTo(DimensionAnalyzer.CoordinateDimension.XYZ);
+            assertThat(result.hasZ()).isTrue();
 
-            assertThatThrownBy(() -> DimensionAnalyzer.validateDimensionConsistency(ls))
-                    .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessageContaining("Mixed-dimension");
+            // no exception: NaN is a legal PostGIS ordinate value, not a dimension signal
+            DimensionAnalyzer.validateDimensionConsistency(ls);
+        }
+
+        @Test
+        @DisplayName("Plain all-NaN-Z geometry resolves to XY")
+        void testPlainAllNanZResolvesToXY() {
+            LineString ls = gf.createLineString(new Coordinate[]{
+                    new Coordinate(1, 2, Double.NaN), new Coordinate(3, 4, Double.NaN)
+            });
+            assertThat(DimensionAnalyzer.analyze(ls).getDimension())
+                    .isEqualTo(DimensionAnalyzer.CoordinateDimension.XY);
+        }
+
+        @Test
+        @DisplayName("Typed XYM with NaN M keeps the M dimension (metadata wins over values)")
+        void testXymWithNanMKeepsM() {
+            Point p = gf.createPoint(new CoordinateXYM(1, 2, Double.NaN));
+            DimensionAnalyzer.Result result = DimensionAnalyzer.analyze(p);
+            assertThat(result.getDimension()).isEqualTo(DimensionAnalyzer.CoordinateDimension.XYM);
+            assertThat(result.hasM()).isTrue();
+            assertThat(result.hasZ()).isFalse();
+        }
+
+        @Test
+        @DisplayName("Typed XYZM with NaN M keeps both dimensions")
+        void testXyzmWithNanMKeepsZm() {
+            Point p = gf.createPoint(new CoordinateXYZM(1, 2, 3, Double.NaN));
+            DimensionAnalyzer.Result result = DimensionAnalyzer.analyze(p);
+            assertThat(result.getDimension()).isEqualTo(DimensionAnalyzer.CoordinateDimension.XYZM);
         }
 
         @Test

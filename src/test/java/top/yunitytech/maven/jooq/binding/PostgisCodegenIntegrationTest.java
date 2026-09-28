@@ -24,9 +24,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class PostgisCodegenIntegrationTest {
 
-    private static final String JDBC_URL = "jdbc:postgresql://localhost:5432/test_db";
-    private static final String JDBC_USER = "postgres";
-    private static final String JDBC_PASS = "postgres";
+    private static final String JDBC_URL = TestDatabase.URL;
+    private static final String JDBC_USER = TestDatabase.USER;
+    private static final String JDBC_PASS = TestDatabase.PASSWORD;
     private static final String TARGET_DIR = "target/generated-test-sources/jooq";
     private static final String TARGET_PACKAGE = "top.yunitytech.maven.jooq.generated";
 
@@ -42,6 +42,8 @@ class PostgisCodegenIntegrationTest {
                     "  name VARCHAR(100)," +
                     "  geom GEOMETRY(Geometry, 4326)," +
                     "  geog GEOGRAPHY(Point, 4326)," +
+                    "  geog_z GEOGRAPHY(PointZ, 4326)," +
+                    "  geog_m GEOGRAPHY(PointM, 4326)," +
                     "  geom_3d GEOMETRY(GeometryZ, 3857)," +
                     "  geom_m GEOMETRY(GeometryM, 4326)," +
                     "  geom_4d GEOMETRY(GeometryZM, 4326)," +
@@ -51,7 +53,24 @@ class PostgisCodegenIntegrationTest {
             Assumptions.abort("PostgreSQL/PostGIS is not reachable at " + JDBC_URL + ", skipping codegen test: " + e.getMessage());
         }
 
-        // 2. Configure jOOQ Codegen Configuration programmatically
+        // 2. Configure jOOQ Codegen Configuration programmatically.
+        // jOOQ 3.15+ reports geometry columns as its native org.jooq.Geometry type, so the
+        // bindings must be instantiated through the generic-binding protocol; jOOQ 3.14
+        // resolves PostGIS columns as OTHER and instantiates the bindings raw.
+        boolean supportsGenericBinding = supportsGenericBinding();
+        ForcedType geometryForcedType = new ForcedType()
+                .withUserType("org.locationtech.jts.geom.Geometry")
+                .withBinding("top.yunitytech.maven.jooq.binding.PostgisGeometryBinding")
+                .withIncludeTypes("(?i:geometry)");
+        ForcedType geographyForcedType = new ForcedType()
+                .withUserType("org.locationtech.jts.geom.Geometry")
+                .withBinding("top.yunitytech.maven.jooq.binding.PostgisGeographyBinding")
+                .withIncludeTypes("(?i:geography)");
+        if (supportsGenericBinding) {
+            enableGenericBinding(geometryForcedType);
+            enableGenericBinding(geographyForcedType);
+        }
+
         Configuration config = new Configuration()
                 .withLogging(Logging.DEBUG)
                 .withJdbc(new Jdbc()
@@ -68,16 +87,7 @@ class PostgisCodegenIntegrationTest {
                                 .withName("org.jooq.meta.postgres.PostgresDatabase")
                                 .withInputSchema("public")
                                 .withIncludes("test_spatial")
-                                .withForcedTypes(
-                                        new ForcedType()
-                                                .withUserType("org.locationtech.jts.geom.Geometry")
-                                                .withBinding("top.yunitytech.maven.jooq.binding.PostgisGeometryBinding")
-                                                .withIncludeTypes("(?i:geometry)"),
-                                        new ForcedType()
-                                                .withUserType("org.locationtech.jts.geom.Geometry")
-                                                .withBinding("top.yunitytech.maven.jooq.binding.PostgisGeographyBinding")
-                                                .withIncludeTypes("(?i:geography)")
-                                ))
+                                .withForcedTypes(geometryForcedType, geographyForcedType))
                         .withTarget(new Target()
                                 .withPackageName(TARGET_PACKAGE)
                                 .withDirectory(TARGET_DIR)));
@@ -92,21 +102,40 @@ class PostgisCodegenIntegrationTest {
         assertThat(tableFilePath).exists();
         assertThat(recordFilePath).exists();
 
-        // 5. Verify contents of generated Table class
+        // 5. Verify contents of the generated Table class.
+        // jOOQ 3.14 emits the simple JTS type name; jOOQ 3.15+ (generic binding protocol)
+        // may emit the fully-qualified name, so both spellings are accepted.
         String tableSource = new String(Files.readAllBytes(tableFilePath), StandardCharsets.UTF_8);
         assertThat(tableSource)
-                .contains("TableField<TestSpatialRecord, Geometry> GEOM")
-                .contains("TableField<TestSpatialRecord, Geometry> GEOG")
-                .contains("top.yunitytech.maven.jooq.binding.PostgisGeometryBinding")
-                .contains("top.yunitytech.maven.jooq.binding.PostgisGeographyBinding");
+                .contains("PostgisGeometryBinding")
+                .contains("PostgisGeographyBinding");
+        assertThat(containsAny(tableSource,
+                "TableField<TestSpatialRecord, Geometry> GEOM",
+                "TableField<TestSpatialRecord, org.locationtech.jts.geom.Geometry> GEOM"))
+                .as("GEOM field declared with JTS Geometry type").isTrue();
+        assertThat(containsAny(tableSource,
+                "TableField<TestSpatialRecord, Geometry> GEOG",
+                "TableField<TestSpatialRecord, org.locationtech.jts.geom.Geometry> GEOG"))
+                .as("GEOG field declared with JTS Geometry type").isTrue();
 
-        // 6. Verify contents of generated Record class
+        // 6. Verify contents of the generated Record class
         String recordSource = new String(Files.readAllBytes(recordFilePath), StandardCharsets.UTF_8);
-        assertThat(recordSource)
-                .contains("public void setGeom(Geometry value)")
-                .contains("public Geometry getGeom()")
-                .contains("public void setGeog(Geometry value)")
-                .contains("public Geometry getGeog()");
+        assertThat(containsAny(recordSource,
+                "public void setGeom(Geometry value)",
+                "public void setGeom(org.locationtech.jts.geom.Geometry value)"))
+                .as("record setter uses JTS Geometry").isTrue();
+        assertThat(containsAny(recordSource,
+                "public Geometry getGeom()",
+                "public org.locationtech.jts.geom.Geometry getGeom()"))
+                .as("record getter returns JTS Geometry").isTrue();
+        assertThat(containsAny(recordSource,
+                "public void setGeog(Geometry value)",
+                "public void setGeog(org.locationtech.jts.geom.Geometry value)"))
+                .as("record setter uses JTS Geometry").isTrue();
+        assertThat(containsAny(recordSource,
+                "public Geometry getGeog()",
+                "public org.locationtech.jts.geom.Geometry getGeog()"))
+                .as("record getter returns JTS Geometry").isTrue();
 
         // 7. Dynamically compile generated code to ensure zero compilation errors
         JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
@@ -131,5 +160,35 @@ class PostgisCodegenIntegrationTest {
 
         int exitCode = compiler.run(null, null, null, compilerArgs.toArray(new String[0]));
         assertThat(exitCode).as("Generated code should compile without errors").isEqualTo(0);
+    }
+
+    /**
+     * {@code <genericBinding>} was introduced in jOOQ 3.15; this project compiles against
+     * 3.14, so presence is probed and invoked reflectively.
+     */
+    private static boolean supportsGenericBinding() {
+        try {
+            ForcedType.class.getMethod("setGenericBinding", Boolean.class);
+            return true;
+        } catch (NoSuchMethodException e) {
+            return false;
+        }
+    }
+
+    private static void enableGenericBinding(ForcedType forcedType) {
+        try {
+            ForcedType.class.getMethod("setGenericBinding", Boolean.class).invoke(forcedType, Boolean.TRUE);
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException("Failed to enable generic binding", e);
+        }
+    }
+
+    private static boolean containsAny(String haystack, String... needles) {
+        for (String needle : needles) {
+            if (haystack.contains(needle)) {
+                return true;
+            }
+        }
+        return false;
     }
 }

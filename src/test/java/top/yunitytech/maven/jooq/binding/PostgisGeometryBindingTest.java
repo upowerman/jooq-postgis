@@ -1,6 +1,14 @@
 package top.yunitytech.maven.jooq.binding;
 
-import org.jooq.*;
+import org.jooq.BindingGetResultSetContext;
+import org.jooq.BindingGetStatementContext;
+import org.jooq.BindingRegisterContext;
+import org.jooq.BindingSQLContext;
+import org.jooq.BindingSetStatementContext;
+import org.jooq.Converter;
+import org.jooq.QueryPart;
+import org.jooq.RenderContext;
+import org.jooq.SQLDialect;
 import org.jooq.conf.ParamType;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -15,6 +23,7 @@ import org.locationtech.jts.io.WKBWriter;
 import org.postgresql.util.PGobject;
 
 import java.lang.reflect.Proxy;
+import java.sql.CallableStatement;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -27,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class PostgisGeometryBindingTest {
 
-    private final GeometryFactory gf = AbstractPostgisBinding.GEOMETRY_FACTORY;
+    private final GeometryFactory gf = PostgisCodec.GEOMETRY_FACTORY;
     private PostgisGeometryBinding binding;
     private PostgisGeographyBinding geographyBinding;
     private Converter<Object, Geometry> converter;
@@ -524,16 +533,16 @@ class PostgisGeometryBindingTest {
     }
 
     @Nested
-    @DisplayName("WKTWriter(4) XYM Output & WKBReader EWKB M/ZM Reading Tests")
+    @DisplayName("M/ZM EWKB Output & WKBReader EWKB M/ZM Reading Tests")
     class WktOutputAndWkbReadingTests {
 
         @Test
-        @DisplayName("WKTWriter(4) outputs POINT M, POLYGON M, GEOMETRYCOLLECTION M for XYM")
-        void testWktWriter4OutputForXYM() {
+        @DisplayName("toSpatialRepresentation outputs EWKB hex with M flag for XYM (Point, Polygon, GeometryCollection)")
+        void testMOutputForXYM() {
             Point p = gf.createPoint(new CoordinateXYM(10, 20, 30));
             p.setSRID(4326);
             String pRepr = (String) converter.to(p);
-            assertThat(pRepr).startsWith("SRID=4326;POINT M");
+            assertThat(pRepr).startsWith("0060"); // big-endian, M|SRID flags
 
             CoordinateXYM[] shell = new CoordinateXYM[]{
                     new CoordinateXYM(0, 0, 1), new CoordinateXYM(0, 10, 2),
@@ -542,12 +551,16 @@ class PostgisGeometryBindingTest {
             Polygon poly = gf.createPolygon(new CoordinateArraySequence(shell));
             poly.setSRID(4326);
             String polyRepr = (String) converter.to(poly);
-            assertThat(polyRepr).startsWith("SRID=4326;POLYGON M");
+            assertThat(polyRepr).startsWith("0060000003"); // M|SRID flags on polygon type 3
 
             GeometryCollection gc = gf.createGeometryCollection(new Geometry[]{p, poly});
             gc.setSRID(4326);
             String gcRepr = (String) converter.to(gc);
-            assertThat(gcRepr).startsWith("SRID=4326;GEOMETRYCOLLECTION M");
+            assertThat(gcRepr).startsWith("0060000007"); // M|SRID flags on collection type 7
+
+            // and all of them round-trip back to XYM with M preserved
+            assertThat(converter.from(pRepr).getCoordinate()).isInstanceOf(CoordinateXYM.class);
+            assertThat(converter.from(gcRepr).getCoordinate().getM()).isEqualTo(30.0);
         }
 
         @Test
@@ -916,6 +929,87 @@ class PostgisGeometryBindingTest {
             assertThat(resultValue.get()).isNotNull();
             assertThat(resultValue.get().getSRID()).isEqualTo(4326);
             assertThat(resultValue.get().getCoordinate().x).isEqualTo(5.0);
+        }
+
+        @Test
+        @DisplayName("register() registers OUT parameters with Types.OTHER and the spatial type name")
+        void testRegisterOutParameter() throws SQLException {
+            AtomicInteger boundIndex = new AtomicInteger();
+            AtomicInteger boundType = new AtomicInteger();
+            AtomicReference<String> boundTypeName = new AtomicReference<>();
+
+            CallableStatement stmt = (CallableStatement) Proxy.newProxyInstance(
+                    getClass().getClassLoader(),
+                    new Class<?>[]{CallableStatement.class},
+                    (proxy, method, args) -> {
+                        if ("registerOutParameter".equals(method.getName())) {
+                            boundIndex.set((Integer) args[0]);
+                            boundType.set((Integer) args[1]);
+                            if (args.length > 2) {
+                                boundTypeName.set((String) args[2]);
+                            }
+                        }
+                        return null;
+                    });
+
+            BindingRegisterContext<Geometry> ctx = (BindingRegisterContext<Geometry>) Proxy.newProxyInstance(
+                    getClass().getClassLoader(),
+                    new Class<?>[]{BindingRegisterContext.class},
+                    (proxy, method, args) -> {
+                        if ("index".equals(method.getName())) return 3;
+                        if ("statement".equals(method.getName())) return stmt;
+                        return null;
+                    });
+
+            binding.register(ctx);
+            assertThat(boundIndex.get()).isEqualTo(3);
+            assertThat(boundType.get()).isEqualTo(Types.OTHER);
+            assertThat(boundTypeName.get()).isEqualTo("geometry");
+
+            geographyBinding.register(ctx);
+            assertThat(boundTypeName.get()).isEqualTo("geography");
+        }
+
+        @Test
+        @DisplayName("get() from CallableStatement converts OUT parameter to Geometry")
+        void testGetCallableStatement() throws SQLException {
+            Point point = gf.createPoint(new Coordinate(7, 8));
+            point.setSRID(3857);
+            String hex = (String) converter.to(point);
+
+            PGobject pg = new PGobject();
+            pg.setType("geography");
+            pg.setValue(hex);
+
+            CallableStatement stmt = (CallableStatement) Proxy.newProxyInstance(
+                    getClass().getClassLoader(),
+                    new Class<?>[]{CallableStatement.class},
+                    (proxy, method, args) -> {
+                        if ("getObject".equals(method.getName()) && Integer.valueOf(2).equals(args[0])) {
+                            return pg;
+                        }
+                        return null;
+                    });
+
+            AtomicReference<Geometry> resultValue = new AtomicReference<>();
+            BindingGetStatementContext<Geometry> ctx = (BindingGetStatementContext<Geometry>) Proxy.newProxyInstance(
+                    getClass().getClassLoader(),
+                    new Class<?>[]{BindingGetStatementContext.class},
+                    (proxy, method, args) -> {
+                        if ("statement".equals(method.getName())) return stmt;
+                        if ("index".equals(method.getName())) return 2;
+                        if ("value".equals(method.getName()) && args != null && args.length == 1) {
+                            resultValue.set((Geometry) args[0]);
+                            return null;
+                        }
+                        return null;
+                    });
+
+            geographyBinding.get(ctx);
+
+            assertThat(resultValue.get()).isNotNull();
+            assertThat(resultValue.get().getSRID()).isEqualTo(3857);
+            assertThat(resultValue.get().getCoordinate().x).isEqualTo(7.0);
         }
     }
 

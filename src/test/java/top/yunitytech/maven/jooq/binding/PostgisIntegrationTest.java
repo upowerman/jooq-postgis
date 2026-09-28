@@ -21,13 +21,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class PostgisIntegrationTest {
 
-    private static final String JDBC_URL = "jdbc:postgresql://localhost:5432/test_db";
-    private static final String JDBC_USER = "postgres";
-    private static final String JDBC_PASS = "postgres";
+    private static final String JDBC_URL = TestDatabase.URL;
+    private static final String JDBC_USER = TestDatabase.USER;
+    private static final String JDBC_PASS = TestDatabase.PASSWORD;
 
     private Connection connection;
     private DSLContext dsl;
-    private final GeometryFactory gf = AbstractPostgisBinding.GEOMETRY_FACTORY;
+    private final GeometryFactory gf = PostgisCodec.GEOMETRY_FACTORY;
 
     // Define table and fields with distinct PostgisGeometryBinding and PostgisGeographyBinding
     private final Table<?> TEST_SPATIAL = DSL.table("test_spatial");
@@ -35,6 +35,8 @@ class PostgisIntegrationTest {
     private final Field<String> NAME = DSL.field("name", SQLDataType.VARCHAR);
     private final Field<Geometry> GEOM = DSL.field("geom", SQLDataType.OTHER.asConvertedDataType(new PostgisGeometryBinding()));
     private final Field<Geometry> GEOG = DSL.field("geog", SQLDataType.OTHER.asConvertedDataType(new PostgisGeographyBinding()));
+    private final Field<Geometry> GEOG_Z = DSL.field("geog_z", SQLDataType.OTHER.asConvertedDataType(new PostgisGeographyBinding()));
+    private final Field<Geometry> GEOG_M = DSL.field("geog_m", SQLDataType.OTHER.asConvertedDataType(new PostgisGeographyBinding()));
     private final Field<Geometry> GEOM_3D = DSL.field("geom_3d", SQLDataType.OTHER.asConvertedDataType(new PostgisGeometryBinding()));
     private final Field<Geometry> GEOM_M = DSL.field("geom_m", SQLDataType.OTHER.asConvertedDataType(new PostgisGeometryBinding()));
     private final Field<Geometry> GEOM_4D = DSL.field("geom_4d", SQLDataType.OTHER.asConvertedDataType(new PostgisGeometryBinding()));
@@ -52,8 +54,10 @@ class PostgisIntegrationTest {
                     "CREATE TABLE test_spatial (" +
                             "  id BIGSERIAL PRIMARY KEY," +
                             "  name VARCHAR(100)," +
-                            "  geom GEOMETRY(Geometry, 4326)," +
-                            "  geog GEOGRAPHY(Point, 4326)," +
+                    "  geom GEOMETRY(Geometry, 4326)," +
+                    "  geog GEOGRAPHY(Point, 4326)," +
+                    "  geog_z GEOGRAPHY(PointZ, 4326)," +
+                    "  geog_m GEOGRAPHY(PointM, 4326)," +
                             "  geom_3d GEOMETRY(GeometryZ, 3857)," +
                             "  geom_m GEOMETRY(GeometryM, 4326)," +
                             "  geom_4d GEOMETRY(GeometryZM, 4326)," +
@@ -782,13 +786,14 @@ class PostgisIntegrationTest {
         Point pM = gf.createPoint(new CoordinateXYM(116.4, 39.9, 1695888000.0));
         pM.setSRID(4326);
 
-        // Verify EWKT format in inlined SQL
+        // Verify M geometry inlines as EWKB hex with the M flag (since 1.0.5)
         org.jooq.InsertSetMoreStep<?> insertQuery = dsl.insertInto(TEST_SPATIAL)
                 .set(ID, 203L)
                 .set(NAME, "Inline XYM")
                 .set(GEOM_M, pM);
+        String expectedHex = PostgisCodec.toSpatialRepresentation(pM);
         String inlinedInsert = dsl.renderInlined(insertQuery);
-        assertThat(inlinedInsert).contains("SRID=4326;POINT M").contains("::geometry");
+        assertThat(inlinedInsert).contains("'" + expectedHex + "'::geometry");
 
         DSLContext staticDsl = DSL.using(connection, SQLDialect.POSTGRES,
                 new org.jooq.conf.Settings().withStatementType(org.jooq.conf.StatementType.STATIC_STATEMENT));
@@ -822,8 +827,9 @@ class PostgisIntegrationTest {
                 .set(ID, 204L)
                 .set(NAME, "Inline XYZM")
                 .set(GEOM_4D, poly4D);
+        String expectedPolyHex = PostgisCodec.toSpatialRepresentation(poly4D);
         String inlinedInsert = dsl.renderInlined(insertQuery);
-        assertThat(inlinedInsert).contains("SRID=4326;POLYGON ZM").contains("::geometry");
+        assertThat(inlinedInsert).contains("'" + expectedPolyHex + "'::geometry");
 
         DSLContext staticDsl = DSL.using(connection, SQLDialect.POSTGRES,
                 new org.jooq.conf.Settings().withStatementType(org.jooq.conf.StatementType.STATIC_STATEMENT));
@@ -889,5 +895,118 @@ class PostgisIntegrationTest {
         assertThat(distanceMeters).isNotNull();
         // Distance between Beijing and Shanghai ~1068 km = ~1,068,000 meters
         assertThat(distanceMeters).isBetween(1_050_000.0, 1_100_000.0);
+    }
+
+    // ==========================================
+    // Update / Geography Z·M / NaN / Structural Integration Tests
+    // ==========================================
+
+    @Test
+    @DisplayName("Real DB: UPDATE statement round-trips replaced geometries (2D and XYZM columns)")
+    void testUpdateGeometry() {
+        Point original = gf.createPoint(new Coordinate(116.0, 39.0));
+        original.setSRID(4326);
+        dsl.insertInto(TEST_SPATIAL).set(ID, 300L).set(NAME, "Before").set(GEOM, original).execute();
+
+        Point updated = gf.createPoint(new Coordinate(121.47, 31.23));
+        updated.setSRID(4326);
+        int rows = dsl.update(TEST_SPATIAL).set(GEOM, updated).set(NAME, "After").where(ID.eq(300L)).execute();
+        assertThat(rows).isEqualTo(1);
+
+        Geometry result = dsl.select(GEOM).from(TEST_SPATIAL).where(ID.eq(300L)).fetchOne(GEOM);
+        assertThat(result).isNotNull();
+        assertThat(result.getCoordinate().x).isEqualTo(121.47);
+        assertThat(result.getSRID()).isEqualTo(4326);
+
+        // XYZM update on the typmod-matched column
+        Point updated4D = gf.createPoint(new CoordinateXYZM(121.47, 31.23, 100.0, 1695888000.0));
+        updated4D.setSRID(4326);
+        dsl.update(TEST_SPATIAL).set(GEOM_4D, updated4D).where(ID.eq(300L)).execute();
+        Geometry result4D = dsl.select(GEOM_4D).from(TEST_SPATIAL).where(ID.eq(300L)).fetchOne(GEOM_4D);
+        assertThat(result4D).isNotNull();
+        assertThat(result4D.getCoordinate().getZ()).isEqualTo(100.0);
+        assertThat(result4D.getCoordinate().getM()).isEqualTo(1695888000.0);
+    }
+
+    @Test
+    @DisplayName("Real DB: GEOGRAPHY(PointZ) column round-trips a Z point")
+    void testGeographyZRoundTrip() {
+        Point p = gf.createPoint(new Coordinate(121.4737, 31.2304, 50.0));
+        p.setSRID(4326);
+        dsl.insertInto(TEST_SPATIAL).set(ID, 301L).set(NAME, "Geog Z").set(GEOG_Z, p).execute();
+
+        Geometry result = dsl.select(GEOG_Z).from(TEST_SPATIAL).where(ID.eq(301L)).fetchOne(GEOG_Z);
+        assertThat(result).isNotNull();
+        assertThat(result.getSRID()).isEqualTo(4326);
+        assertThat(result.getCoordinate().getZ()).isEqualTo(50.0);
+        assertThat(Double.isNaN(result.getCoordinate().getM())).isTrue();
+    }
+
+    @Test
+    @DisplayName("Real DB: GEOGRAPHY(PointM) column round-trips an M point")
+    void testGeographyMRoundTrip() {
+        Point p = gf.createPoint(new CoordinateXYM(121.4737, 31.2304, 1695888000.0));
+        p.setSRID(4326);
+        dsl.insertInto(TEST_SPATIAL).set(ID, 302L).set(NAME, "Geog M").set(GEOG_M, p).execute();
+
+        Geometry result = dsl.select(GEOG_M).from(TEST_SPATIAL).where(ID.eq(302L)).fetchOne(GEOG_M);
+        assertThat(result).isNotNull();
+        Coordinate c = result.getCoordinate();
+        assertThat(Double.isNaN(c.getZ())).isTrue();
+        assertThat(c.getM()).isEqualTo(1695888000.0);
+    }
+
+    @Test
+    @DisplayName("Real DB: LINESTRING Z with NaN Z (legal PostGIS data) inserts and reads back without error")
+    void testNanZLinestringRoundTrip() {
+        LineString ls = gf.createLineString(new Coordinate[]{
+                new Coordinate(0, 0, Double.NaN), new Coordinate(1, 1, 5)
+        });
+        ls.setSRID(3857);
+        dsl.insertInto(TEST_SPATIAL).set(ID, 303L).set(NAME, "NaN Z").set(GEOM_3D, ls).execute();
+
+        Geometry result = dsl.select(GEOM_3D).from(TEST_SPATIAL).where(ID.eq(303L)).fetchOne(GEOM_3D);
+        assertThat(result).isNotNull().isInstanceOf(LineString.class);
+        Coordinate[] coords = result.getCoordinates();
+        assertThat(Double.isNaN(coords[0].getZ())).isTrue();
+        assertThat(coords[1].getZ()).isEqualTo(5.0);
+        assertThat(result.getSRID()).isEqualTo(3857);
+    }
+
+    @Test
+    @DisplayName("Real DB: GeometryCollection M containing an EMPTY component round-trips")
+    void testGeometryCollectionMWithEmptyComponentDb() {
+        Point empty = gf.createPoint();
+        Point p = gf.createPoint(new CoordinateXYM(1, 2, 10));
+        GeometryCollection gc = gf.createGeometryCollection(new Geometry[]{empty, p});
+        gc.setSRID(4326);
+
+        dsl.insertInto(TEST_SPATIAL).set(ID, 304L).set(NAME, "GC M empty child").set(GEOM_ANY, gc).execute();
+
+        Geometry result = dsl.select(GEOM_ANY).from(TEST_SPATIAL).where(ID.eq(304L)).fetchOne(GEOM_ANY);
+        assertThat(result).isInstanceOf(GeometryCollection.class);
+        GeometryCollection rgc = (GeometryCollection) result;
+        assertThat(rgc.getNumGeometries()).isEqualTo(2);
+        assertThat(rgc.getGeometryN(0).isEmpty()).isTrue();
+        assertThat(rgc.getGeometryN(1).getCoordinate().getM()).isEqualTo(10.0);
+    }
+
+    @Test
+    @DisplayName("Real DB: 50,000-vertex LineString round-trips exactly")
+    void testLargeLinestringRoundTrip() {
+        int vertexCount = 50_000;
+        Coordinate[] coords = new Coordinate[vertexCount];
+        for (int i = 0; i < vertexCount; i++) {
+            coords[i] = new Coordinate(i * 0.0001, (i % 100) * 0.0001);
+        }
+        LineString line = gf.createLineString(coords);
+        line.setSRID(4326);
+
+        dsl.insertInto(TEST_SPATIAL).set(ID, 305L).set(NAME, "Large line").set(GEOM, line).execute();
+
+        Geometry result = dsl.select(GEOM).from(TEST_SPATIAL).where(ID.eq(305L)).fetchOne(GEOM);
+        assertThat(result).isInstanceOf(LineString.class);
+        assertThat(result.getCoordinates()).hasSize(vertexCount);
+        assertThat(result.equalsExact(line)).isTrue();
     }
 }
