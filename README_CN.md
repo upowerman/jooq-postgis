@@ -8,7 +8,6 @@
 [![jOOQ](https://img.shields.io/badge/jOOQ-3.14%2B-008080.svg)](https://www.jooq.org/)
 [![PostGIS](https://img.shields.io/badge/PostGIS-3.x-275B89.svg?logo=postgresql&logoColor=white)](https://postgis.net/)
 [![JTS](https://img.shields.io/badge/JTS-1.18%2B-green.svg)](https://github.com/locationtech/jts)
-[![Spring Boot](https://img.shields.io/badge/Spring%20Boot-Compatible-6DB33F.svg?logo=springboot&logoColor=white)](https://spring.io/projects/spring-boot)
 
 生产级、轻量化的 PostGIS 空间数据类型 jOOQ Binding 实现 —— 在 PostgreSQL PostGIS 空间字段与 JTS `org.locationtech.jts.geom.Geometry` 之间提供无缝、高性能的双向类型转换。
 
