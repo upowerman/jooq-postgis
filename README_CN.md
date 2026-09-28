@@ -38,7 +38,7 @@
 <dependency>
     <groupId>top.yunitytech.maven</groupId>
     <artifactId>jooq-postgis</artifactId>
-    <version>1.0.3</version>
+    <version>1.0.4</version>
 </dependency>
 ```
 
@@ -143,6 +143,18 @@ Boolean isNearby = dsl.select(
         DSL.field("ST_DWithin({0}, {1}, 200000)", Boolean.class, A.GEOG, B.GEOG)
     ).from(A).crossJoin(B)
     .fetchOne(0, Boolean.class);
+```
+
+### 4. 独立空间编解码器（`PostgisCodec`）
+
+如果您需要在 jOOQ 体系之外独立编解码 PostGIS 空间数据（例如常规 JDBC 查询、REST 接口序列化、MQ 消息消费等），可直接调用 `PostgisCodec`：
+
+```java
+// 反序列化 PGobject、EWKB Hex、EWKT 或 byte[] 为 JTS Geometry
+Geometry geom = PostgisCodec.from(databaseObject);
+
+// 将 JTS Geometry 转换为 PostGIS 最佳持久化表示（2D/3D 转 EWKB Hex，3DM/4D 转 EWKT）
+String repr = PostgisCodec.toSpatialRepresentation(geom);
 ```
 
 ## 开源协议

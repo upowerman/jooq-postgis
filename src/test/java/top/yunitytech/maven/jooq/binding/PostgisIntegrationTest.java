@@ -719,4 +719,175 @@ class PostgisIntegrationTest {
         ).hasRootCauseInstanceOf(IllegalArgumentException.class)
                 .hasStackTraceContaining("Mixed-dimension");
     }
+
+    // ==========================================
+    // SQL Inline Execution & Multi-Dimension Tests
+    // ==========================================
+
+    @Test
+    @DisplayName("Real DB [Inline SQL]: 2D (XY) Point insert and query via inlined SQL & static statement")
+    void testInlinedSqlXY() {
+        Point p2d = gf.createPoint(new Coordinate(116.4074, 39.9042));
+        p2d.setSRID(4326);
+
+        // 1. Verify renderInlined SQL string
+        org.jooq.InsertSetMoreStep<?> insertQuery = dsl.insertInto(TEST_SPATIAL)
+                .set(ID, 201L)
+                .set(NAME, "Inline 2D")
+                .set(GEOM, p2d);
+        String inlinedInsert = dsl.renderInlined(insertQuery);
+        assertThat(inlinedInsert).contains("::geometry");
+
+        int rows = dsl.execute(inlinedInsert);
+        assertThat(rows).isEqualTo(1);
+
+        // 2. Query back via StatementType.STATIC_STATEMENT (which executes with all params inlined)
+        DSLContext staticDsl = DSL.using(connection, SQLDialect.POSTGRES,
+                new org.jooq.conf.Settings().withStatementType(org.jooq.conf.StatementType.STATIC_STATEMENT));
+
+        Geometry result = staticDsl.select(GEOM).from(TEST_SPATIAL).where(ID.eq(201L)).fetchOne(GEOM);
+
+        assertThat(result).isNotNull().isInstanceOf(Point.class);
+        assertThat(result.getSRID()).isEqualTo(4326);
+        assertThat(result.getCoordinate().x).isEqualTo(116.4074);
+        assertThat(result.getCoordinate().y).isEqualTo(39.9042);
+        assertThat(Double.isNaN(result.getCoordinate().getZ())).isTrue();
+    }
+
+    @Test
+    @DisplayName("Real DB [Inline SQL]: 3D (XYZ) Point insert and query via inlined SQL & static statement")
+    void testInlinedSqlXYZ() {
+        Point p3d = gf.createPoint(new Coordinate(116.4, 39.9, 100.5));
+        p3d.setSRID(3857);
+
+        DSLContext staticDsl = DSL.using(connection, SQLDialect.POSTGRES,
+                new org.jooq.conf.Settings().withStatementType(org.jooq.conf.StatementType.STATIC_STATEMENT));
+
+        staticDsl.insertInto(TEST_SPATIAL)
+                .set(ID, 202L)
+                .set(NAME, "Inline 3D")
+                .set(GEOM_3D, p3d)
+                .execute();
+
+        Geometry result = staticDsl.select(GEOM_3D).from(TEST_SPATIAL).where(ID.eq(202L)).fetchOne(GEOM_3D);
+
+        assertThat(result).isNotNull().isInstanceOf(Point.class);
+        assertThat(result.getSRID()).isEqualTo(3857);
+        assertThat(result.getCoordinate().getZ()).isEqualTo(100.5);
+    }
+
+    @Test
+    @DisplayName("Real DB [Inline SQL]: 3DM (XYM) Point via inlined EWKT SQL text & static statement")
+    void testInlinedSqlXYM() {
+        Point pM = gf.createPoint(new CoordinateXYM(116.4, 39.9, 1695888000.0));
+        pM.setSRID(4326);
+
+        // Verify EWKT format in inlined SQL
+        org.jooq.InsertSetMoreStep<?> insertQuery = dsl.insertInto(TEST_SPATIAL)
+                .set(ID, 203L)
+                .set(NAME, "Inline XYM")
+                .set(GEOM_M, pM);
+        String inlinedInsert = dsl.renderInlined(insertQuery);
+        assertThat(inlinedInsert).contains("SRID=4326;POINT M").contains("::geometry");
+
+        DSLContext staticDsl = DSL.using(connection, SQLDialect.POSTGRES,
+                new org.jooq.conf.Settings().withStatementType(org.jooq.conf.StatementType.STATIC_STATEMENT));
+
+        staticDsl.insertInto(TEST_SPATIAL)
+                .set(ID, 203L)
+                .set(NAME, "Inline XYM")
+                .set(GEOM_M, pM)
+                .execute();
+
+        Geometry result = staticDsl.select(GEOM_M).from(TEST_SPATIAL).where(ID.eq(203L)).fetchOne(GEOM_M);
+
+        assertThat(result).isNotNull().isInstanceOf(Point.class);
+        assertThat(result.getSRID()).isEqualTo(4326);
+        assertThat(Double.isNaN(result.getCoordinate().getZ())).isTrue();
+        assertThat(result.getCoordinate().getM()).isEqualTo(1695888000.0);
+    }
+
+    @Test
+    @DisplayName("Real DB [Inline SQL]: 4D (XYZM) Polygon via inlined EWKT SQL text & static statement")
+    void testInlinedSqlXYZM() {
+        CoordinateXYZM[] ring = new CoordinateXYZM[]{
+                new CoordinateXYZM(0, 0, 10, 1), new CoordinateXYZM(0, 10, 10, 2),
+                new CoordinateXYZM(10, 10, 10, 3), new CoordinateXYZM(10, 0, 10, 4),
+                new CoordinateXYZM(0, 0, 10, 1)
+        };
+        Polygon poly4D = gf.createPolygon(new CoordinateArraySequence(ring));
+        poly4D.setSRID(4326);
+
+        org.jooq.InsertSetMoreStep<?> insertQuery = dsl.insertInto(TEST_SPATIAL)
+                .set(ID, 204L)
+                .set(NAME, "Inline XYZM")
+                .set(GEOM_4D, poly4D);
+        String inlinedInsert = dsl.renderInlined(insertQuery);
+        assertThat(inlinedInsert).contains("SRID=4326;POLYGON ZM").contains("::geometry");
+
+        DSLContext staticDsl = DSL.using(connection, SQLDialect.POSTGRES,
+                new org.jooq.conf.Settings().withStatementType(org.jooq.conf.StatementType.STATIC_STATEMENT));
+
+        staticDsl.insertInto(TEST_SPATIAL)
+                .set(ID, 204L)
+                .set(NAME, "Inline XYZM")
+                .set(GEOM_4D, poly4D)
+                .execute();
+
+        Geometry result = staticDsl.select(GEOM_4D).from(TEST_SPATIAL).where(ID.eq(204L)).fetchOne(GEOM_4D);
+
+        assertThat(result).isNotNull().isInstanceOf(Polygon.class);
+        assertThat(result.getSRID()).isEqualTo(4326);
+        Coordinate c0 = result.getCoordinates()[0];
+        assertThat(c0.getZ()).isEqualTo(10.0);
+        assertThat(c0.getM()).isEqualTo(1.0);
+    }
+
+    @Test
+    @DisplayName("Real DB [Inline SQL]: NULL geometry and geography inlined as NULL::geometry / NULL::geography")
+    void testInlinedSqlNullValues() {
+        org.jooq.InsertSetMoreStep<?> insertQuery = dsl.insertInto(TEST_SPATIAL)
+                .set(ID, 205L)
+                .set(NAME, "Inline NULL")
+                .set(GEOM, (Geometry) null)
+                .set(GEOG, (Geometry) null);
+        String inlinedInsert = dsl.renderInlined(insertQuery);
+        assertThat(inlinedInsert).contains("NULL::geometry");
+        assertThat(inlinedInsert).contains("NULL::geography");
+
+        DSLContext staticDsl = DSL.using(connection, SQLDialect.POSTGRES,
+                new org.jooq.conf.Settings().withStatementType(org.jooq.conf.StatementType.STATIC_STATEMENT));
+
+        staticDsl.execute(inlinedInsert);
+
+        org.jooq.Record record = staticDsl.select(GEOM, GEOG).from(TEST_SPATIAL).where(ID.eq(205L)).fetchOne();
+        assertThat(record.get(GEOM)).isNull();
+        assertThat(record.get(GEOG)).isNull();
+    }
+
+    @Test
+    @DisplayName("Real DB [Inline SQL]: Geography spherical distance via inlined query")
+    void testInlinedSqlGeographyDistance() {
+        Point bj = gf.createPoint(new Coordinate(116.4074, 39.9042));
+        bj.setSRID(4326);
+        Point sh = gf.createPoint(new Coordinate(121.4737, 31.2304));
+        sh.setSRID(4326);
+
+        DSLContext staticDsl = DSL.using(connection, SQLDialect.POSTGRES,
+                new org.jooq.conf.Settings().withStatementType(org.jooq.conf.StatementType.STATIC_STATEMENT));
+
+        staticDsl.insertInto(TEST_SPATIAL).set(ID, 210L).set(NAME, "Beijing").set(GEOG, bj).execute();
+        staticDsl.insertInto(TEST_SPATIAL).set(ID, 211L).set(NAME, "Shanghai").set(GEOG, sh).execute();
+
+        Double distanceMeters = staticDsl.select(org.jooq.impl.DSL.field("ST_Distance(a.geog, b.geog)", Double.class))
+                .from(TEST_SPATIAL.as("a"))
+                .crossJoin(TEST_SPATIAL.as("b"))
+                .where(org.jooq.impl.DSL.field("a.id", Long.class).eq(210L))
+                .and(org.jooq.impl.DSL.field("b.id", Long.class).eq(211L))
+                .fetchOne(0, Double.class);
+
+        assertThat(distanceMeters).isNotNull();
+        // Distance between Beijing and Shanghai ~1068 km = ~1,068,000 meters
+        assertThat(distanceMeters).isBetween(1_050_000.0, 1_100_000.0);
+    }
 }
