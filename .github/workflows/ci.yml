@@ -36,10 +36,17 @@ jobs:
         include:
           - java: '17'
             jooq: 3.14.16
+            extra_flags: ''
           - java: '21'
             jooq: 3.14.16
+            extra_flags: ''
+          # jOOQ 3.16+ requires Java 17+ at runtime and its reactive-API signatures
+          # reference java.util.concurrent.Flow (JDK 9+), which is invisible to
+          # --release 8 compilation. The 3.19 job therefore compiles with release 17;
+          # the published artifact stays Java 8 bytecode for jOOQ 3.14 users.
           - java: '17'
             jooq: 3.19.10
+            extra_flags: '-Dmaven.compiler.release=17'
 
     steps:
       - uses: actions/checkout@v4
@@ -52,7 +59,7 @@ jobs:
           cache: maven
 
       - name: Build and test (jOOQ ${{ matrix.jooq }})
-        run: mvn -B -ntp test -Djooq.version=${{ matrix.jooq }}
+        run: mvn -B -ntp test -Djooq.version=${{ matrix.jooq }} ${{ matrix.extra_flags }}
 
       - name: Upload test reports
         if: always()

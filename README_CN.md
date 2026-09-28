@@ -198,6 +198,8 @@ mvn test
 
 CI（GitHub Actions）在每次 push / pull request 运行完整矩阵：JDK 17/21 × jOOQ 3.14.16/3.19.10，数据库为 `postgis/postgis:16-3.4` 服务容器。
 
+本地使用 `-Djooq.version=...` 针对 jOOQ 3.16+ 测试时，请追加 `-Dmaven.compiler.release=17`：jOOQ 3.16+ 运行时要求 Java 17+，且其反应式 API 签名（`java.util.concurrent.Flow`）对 `--release 8` 编译不可见。发布的库本体仍为 Java 8 字节码。
+
 ## 开源协议
 
 [Apache License 2.0](LICENSE)
