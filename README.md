@@ -2,6 +2,14 @@
 
 English | [中文说明](README_CN.md)
 
+[![Maven Central](https://img.shields.io/maven-central/v/top.yunitytech.maven/jooq-postgis.svg?color=brightgreen)](https://central.sonatype.com/artifact/top.yunitytech.maven/jooq-postgis)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Java](https://img.shields.io/badge/Java-8%2B-orange.svg?logo=openjdk&logoColor=white)](https://www.oracle.com/java/)
+[![jOOQ](https://img.shields.io/badge/jOOQ-3.14%2B-008080.svg)](https://www.jooq.org/)
+[![PostGIS](https://img.shields.io/badge/PostGIS-3.x-275B89.svg?logo=postgresql&logoColor=white)](https://postgis.net/)
+[![JTS](https://img.shields.io/badge/JTS-1.18%2B-green.svg)](https://github.com/locationtech/jts)
+[![Spring Boot](https://img.shields.io/badge/Spring%20Boot-Compatible-6DB33F.svg?logo=springboot&logoColor=white)](https://spring.io/projects/spring-boot)
+
 Lightweight, production-grade jOOQ spatial bindings for PostgreSQL / PostGIS mapping directly to JTS `org.locationtech.jts.geom.Geometry`.
 
 Designed specifically for projects using `jooq-codegen-maven` to auto-generate type-safe JTS spatial fields with zero heavyweight runtime dependencies.
