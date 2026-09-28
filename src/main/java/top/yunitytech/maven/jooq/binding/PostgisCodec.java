@@ -2,13 +2,12 @@ package top.yunitytech.maven.jooq.binding;
 
 import org.locationtech.jts.geom.*;
 import org.locationtech.jts.geom.impl.CoordinateArraySequence;
-import org.locationtech.jts.geom.impl.PackedCoordinateSequenceFactory;
 import org.locationtech.jts.io.ParseException;
 import org.locationtech.jts.io.WKBReader;
 import org.locationtech.jts.io.WKBWriter;
-import org.locationtech.jts.io.WKTReader;
-import org.locationtech.jts.io.WKTWriter;
 import org.postgresql.util.PGobject;
+import top.yunitytech.maven.jooq.binding.internal.DimensionAnalyzer;
+import top.yunitytech.maven.jooq.binding.internal.SpatialWkbPool;
 
 /**
  * Dedicated spatial codec for PostgreSQL / PostGIS and JTS {@link Geometry}.
@@ -24,13 +23,12 @@ public final class PostgisCodec {
     /**
      * Standard GeometryFactory using CoordinateArraySequenceFactory.
      */
-    public static final GeometryFactory GEOMETRY_FACTORY = new GeometryFactory();
+    public static final GeometryFactory GEOMETRY_FACTORY = SpatialWkbPool.GEOMETRY_FACTORY;
 
     /**
      * GeometryFactory supporting 4D coordinates (XYZM) for reading packed WKB sequences.
      */
-    public static final GeometryFactory PACKED_GEOMETRY_FACTORY =
-            new GeometryFactory(PackedCoordinateSequenceFactory.DOUBLE_FACTORY);
+    public static final GeometryFactory PACKED_GEOMETRY_FACTORY = SpatialWkbPool.PACKED_GEOMETRY_FACTORY;
 
     private PostgisCodec() {
         // Private constructor for static utility class
@@ -98,7 +96,7 @@ public final class PostgisCodec {
             return null;
         }
         if (bytes.length < 5) {
-            Geometry g = new WKBReader(GEOMETRY_FACTORY).read(bytes);
+            Geometry g = SpatialWkbPool.getWkbReader().read(bytes);
             validateDimensionConsistency(g);
             return g;
         }
@@ -112,15 +110,15 @@ public final class PostgisCodec {
         Geometry geom;
         if (!hasM) {
             // 2D (XY) or 3D (XYZ)
-            geom = new WKBReader(GEOMETRY_FACTORY).read(bytes);
+            geom = SpatialWkbPool.getWkbReader().read(bytes);
         } else if (!hasZ) {
             // 3DM (XYM): WKBReader reads M into the Z slot of standard Coordinate.
             // Remap coordinates to CoordinateXYM without losing empty components.
-            Geometry raw = new WKBReader(GEOMETRY_FACTORY).read(bytes);
+            Geometry raw = SpatialWkbPool.getWkbReader().read(bytes);
             geom = remapCoordinates(raw, GEOMETRY_FACTORY, true);
         } else {
             // 4D (XYZM): Read with PACKED_GEOMETRY_FACTORY and remap to CoordinateXYZM
-            Geometry raw = new WKBReader(PACKED_GEOMETRY_FACTORY).read(bytes);
+            Geometry raw = SpatialWkbPool.getPackedWkbReader().read(bytes);
             geom = remapCoordinates(raw, GEOMETRY_FACTORY, false);
         }
 
@@ -148,7 +146,7 @@ public final class PostgisCodec {
             if (semicolon > 5) {
                 int srid = Integer.parseInt(text.substring(5, semicolon).trim());
                 String wkt = fixWktEmptySpacing(text.substring(semicolon + 1).trim());
-                Geometry geom = new WKTReader(GEOMETRY_FACTORY).read(wkt);
+                Geometry geom = SpatialWkbPool.getWktReader().read(wkt);
                 geom.setSRID(srid);
                 validateDimensionConsistency(geom);
                 return geom;
@@ -156,7 +154,7 @@ public final class PostgisCodec {
         }
 
         // Standard WKT format (e.g. POINT(1 2))
-        Geometry geom = new WKTReader(GEOMETRY_FACTORY).read(fixWktEmptySpacing(text));
+        Geometry geom = SpatialWkbPool.getWktReader().read(fixWktEmptySpacing(text));
         validateDimensionConsistency(geom);
         return geom;
     }
@@ -177,25 +175,19 @@ public final class PostgisCodec {
             return null;
         }
         if (geom.isEmpty()) {
-            WKBWriter writer = new WKBWriter(2, true);
+            WKBWriter writer = SpatialWkbPool.getWkbWriter(2);
             return WKBWriter.toHex(writer.write(geom));
         }
 
-        DimensionFilter filter = new DimensionFilter();
-        geom.apply(filter);
-
-        if (filter.isMixed()) {
-            throw new IllegalArgumentException(
-                    "Mixed-dimension geometry is not supported: geometry components have inconsistent coordinate dimensions (e.g. XY mixed with XYZ/XYM/XYZM).");
+        DimensionAnalyzer.Result result = DimensionAnalyzer.analyze(geom);
+        if (result.isMixed()) {
+            DimensionAnalyzer.validateDimensionConsistency(geom);
         }
 
-        boolean hasZ = filter.hasZ();
-        boolean hasM = filter.hasM();
-
-        if (hasM) {
+        if (result.hasM()) {
             // JTS WKBWriter only supports 2D/3D (Z only). For M/ZM coordinates,
             // PostGIS natively parses EWKT format via geometry_in / geography_in.
-            String wkt = fixWktEmptySpacing(new WKTWriter(4).write(geom));
+            String wkt = fixWktEmptySpacing(SpatialWkbPool.getWktWriter4D().write(geom));
             if (geom.getSRID() > 0) {
                 return "SRID=" + geom.getSRID() + ";" + wkt;
             }
@@ -203,8 +195,7 @@ public final class PostgisCodec {
         }
 
         // Standard 2D or 3D (Z) geometry -> EWKB Hex
-        int dimension = hasZ ? 3 : 2;
-        WKBWriter writer = new WKBWriter(dimension, true);
+        WKBWriter writer = SpatialWkbPool.getWkbWriter(result.getWkbOutputDimension());
         return WKBWriter.toHex(writer.write(geom));
     }
 
@@ -228,15 +219,7 @@ public final class PostgisCodec {
      * @throws IllegalArgumentException if geometry components have mixed coordinate dimensions
      */
     public static void validateDimensionConsistency(Geometry geom) {
-        if (geom == null || geom.isEmpty()) {
-            return;
-        }
-        DimensionFilter filter = new DimensionFilter();
-        geom.apply(filter);
-        if (filter.isMixed()) {
-            throw new IllegalArgumentException(
-                    "Mixed-dimension geometry is not supported: geometry components have inconsistent coordinate dimensions (e.g. XY mixed with XYZ/XYM/XYZM).");
-        }
+        DimensionAnalyzer.validateDimensionConsistency(geom);
     }
 
     /**
@@ -351,78 +334,13 @@ public final class PostgisCodec {
 
     /**
      * Filter to verify all non-empty coordinates within a geometry have consistent dimensions (XY / XYZ / XYM / XYZM).
+     *
+     * @deprecated Kept for backward compatibility. Use {@link DimensionAnalyzer} instead.
      */
-    public static class DimensionFilter implements CoordinateSequenceFilter {
-        private Boolean hasZ = null;
-        private Boolean hasM = null;
-        private boolean mixed = false;
-
-        /**
-         * Default constructor.
-         */
+    @Deprecated
+    public static class DimensionFilter extends DimensionAnalyzer.DimensionFilter {
         public DimensionFilter() {
-        }
-
-        @Override
-        public void filter(CoordinateSequence seq, int i) {
-            if (mixed || seq.size() == 0) {
-                return;
-            }
-            Coordinate c = seq.getCoordinate(i);
-            boolean z = !Double.isNaN(c.getZ());
-            boolean m = !Double.isNaN(c.getM());
-            if (hasZ == null) {
-                hasZ = z;
-                hasM = m;
-            } else if (hasZ != z || hasM != m) {
-                mixed = true;
-            }
-        }
-
-        @Override
-        public boolean isDone() {
-            return mixed;
-        }
-
-        @Override
-        public boolean isGeometryChanged() {
-            return false;
-        }
-
-        /**
-         * Returns true if coordinates have mixed dimensions.
-         *
-         * @return true if mixed
-         */
-        public boolean isMixed() {
-            return mixed;
-        }
-
-        /**
-         * Returns true if coordinates have a valid Z dimension.
-         *
-         * @return true if has Z
-         */
-        public boolean hasZ() {
-            return hasZ != null && hasZ;
-        }
-
-        /**
-         * Returns true if coordinates have a valid M dimension.
-         *
-         * @return true if has M
-         */
-        public boolean hasM() {
-            return hasM != null && hasM;
-        }
-
-        /**
-         * Returns true if no coordinates were encountered.
-         *
-         * @return true if empty
-         */
-        public boolean isEmpty() {
-            return hasZ == null;
+            super();
         }
     }
 }
