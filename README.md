@@ -3,6 +3,7 @@
 English | [中文说明](README_CN.md)
 
 [![Maven Central](https://img.shields.io/maven-central/v/top.yunitytech.maven/jooq-postgis.svg?color=brightgreen)](https://central.sonatype.com/artifact/top.yunitytech.maven/jooq-postgis)
+[![CI](https://github.com/upowerman/jooq-postgis/actions/workflows/ci.yml/badge.svg)](https://github.com/upowerman/jooq-postgis/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Java](https://img.shields.io/badge/Java-8%2B-orange.svg?logo=openjdk&logoColor=white)](https://www.oracle.com/java/)
 [![jOOQ](https://img.shields.io/badge/jOOQ-3.14%2B-008080.svg)](https://www.jooq.org/)
@@ -32,9 +33,9 @@ Designed specifically for projects using `jooq-codegen-maven` to auto-generate t
 
 ## Requirements
 
-- Java 8+
-- jOOQ 3.14+
-- PostgreSQL with PostGIS extension
+- Java 8+ (compiled with `--release 8`)
+- jOOQ 3.14+ (runtime; for code generation on jOOQ 3.15+ add `<genericBinding>true</genericBinding>` to each `<forcedType>` — see below)
+- PostgreSQL with PostGIS extension (PostgreSQL/PostGIS dialect only)
 - JTS Core 1.18+
 
 ## Maven Dependency
@@ -45,7 +46,7 @@ Add `jooq-postgis` to your `pom.xml`:
 <dependency>
     <groupId>top.yunitytech.maven</groupId>
     <artifactId>jooq-postgis</artifactId>
-    <version>1.0.4</version>
+    <version>1.0.5</version>
 </dependency>
 ```
 
@@ -71,7 +72,7 @@ In your code generation configuration, add `jooq-postgis` to the plugin `<depend
         <dependency>
             <groupId>top.yunitytech.maven</groupId>
             <artifactId>jooq-postgis</artifactId>
-            <version>1.0.3</version>
+            <version>1.0.5</version>
         </dependency>
     </dependencies>
     <configuration>
@@ -99,6 +100,12 @@ In your code generation configuration, add `jooq-postgis` to the plugin `<depend
 ```
 
 ### 2. Read & Write Spatial Data
+
+> **jOOQ 3.15+ note:** jOOQ 3.15 introduced native spatial support, so the generator resolves
+> `geometry` columns to `org.jooq.Geometry` instead of `OTHER`. On jOOQ 3.15+ (including 3.19.x)
+> add `<genericBinding>true</genericBinding>` to **both** `<forcedType>` entries above — the
+> bindings then instantiate through their `(Class<T>, Class<U>)` constructors and the generated
+> code compiles. On jOOQ 3.14 the element does not exist and must be omitted.
 
 Generated table records will now expose spatial fields directly as `org.locationtech.jts.geom.Geometry`:
 
@@ -160,9 +167,37 @@ You can also use `PostgisCodec` directly outside of jOOQ (e.g. in custom JDBC qu
 // Decode PGobject, EWKB Hex, EWKT, or byte[] to JTS Geometry
 Geometry geom = PostgisCodec.from(databaseObject);
 
-// Encode JTS Geometry to PostGIS representation (EWKB Hex for 2D/3D, EWKT for 3DM/4D)
+// Encode JTS Geometry to PostGIS representation (big-endian EWKB Hex for all
+// dimensions: XY / XYZ / XYM / XYZM, with SRID embedded when non-zero)
 String repr = PostgisCodec.toSpatialRepresentation(geom);
 ```
+
+## Correctness & Edge-Case Semantics
+
+The codec's dimension handling mirrors PostgreSQL / PostGIS semantics as closely as JTS allows:
+
+- **NaN is a legal ordinate value, not a dimension signal.** `LINESTRING Z(0 0 NaN, 1 1 5)` — accepted by PostGIS with `ST_NDims = 3` — round-trips losslessly. Within a single geometry, a Z/M dimension counts as present when any coordinate carries a non-NaN value.
+- **Typed JTS sequences win.** Geometries built from `CoordinateXYM` / `CoordinateXYZM` (or packed sequences with measures) keep their declared dimension even when all M values are NaN; plain `Coordinate` sequences are classified by ordinate values.
+- **Collections are dimension-strict.** `GEOMETRYCOLLECTION(POINT(1 2), POINT Z(3 4 5))` is rejected with `IllegalArgumentException`, exactly like PostGIS rejects it (`Dimensions mismatch in lwcollection`).
+- **Foreign (non-PostGIS) WKB is decoded by leaf flags.** Some ISO WKB writers under-declare collection headers. `fromWkb` profiles the Z/M flags of every leaf geometry (JTS parses each element by its own flags), so `POINT M` children under a 2D collection header decode correctly to XYM instead of silently re-interpreting M as Z. Leaf flags must be uniform across the stream.
+- **EMPTY geometries** serialize as 2D EWKB; dimension markers on empty geometries are not preserved.
+- **typmod and SRID are enforced by PostgreSQL.** `geometry(Point,4326)` constraints and SRID mismatches are rejected by the server — always call `setSRID()` on user-built geometries. The binding itself is transport-only.
+- **PostgreSQL / PostGIS only.** The `?::geometry` / `?::geography` casts are rendered regardless of the configured SQL dialect; other databases are not supported.
+- **Tighter codegen matching (optional).** If your schema contains custom type names containing `geometry`/`geography`, anchor the patterns (e.g. `(?i:^geometry$)`).
+
+## Testing & CI
+
+Integration tests run against a live PostgreSQL + PostGIS instance and skip gracefully when none is reachable:
+
+```bash
+docker run --name postgis-test -e POSTGRES_PASSWORD=postgres -p 5432:5432 -d postgis/postgis:16-3.4
+docker exec postgis-test createdb -U postgres test_db
+mvn test
+```
+
+Connection settings resolve from system properties (`test.db.url`, `test.db.user`, `test.db.password`) or environment variables (`TEST_DB_URL`, `TEST_DB_USER`, `TEST_DB_PASSWORD`), defaulting to `localhost:5432/test_db` with `postgres/postgres`.
+
+CI (GitHub Actions) runs the full suite on every push and pull request — a JDK 17/21 × jOOQ 3.14.16/3.19.10 matrix against a `postgis/postgis:16-3.4` service container.
 
 ## License
 

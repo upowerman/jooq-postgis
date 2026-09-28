@@ -16,25 +16,57 @@ import java.sql.Types;
  * <p>
  * Implements the jOOQ {@link Binding} contract, delegating spatial serialization,
  * deserialization, and coordinate dimension validation to {@link PostgisCodec}.
+ * <p>
+ * Type parameters follow the jOOQ {@code <genericBinding>} instantiation protocol:
+ * {@code T} is the database-side type jOOQ reports for the column and {@code U} is the
+ * user type. jOOQ 3.14 reports PostGIS columns as {@code OTHER} ({@code T = Object});
+ * jOOQ 3.15+ ships native spatial support, where geometry columns resolve to
+ * {@code org.jooq.Geometry}. The user type is always JTS {@link Geometry}, so {@code U}
+ * exists solely to satisfy the generic-binding constructor protocol and is not used
+ * by the binding itself. Raw instantiation ({@code new PostgisGeometryBinding()})
+ * remains fully supported for jOOQ 3.14 based projects.
  *
+ * @param <T> the database-side type jOOQ reports for the bound column
+ *            ({@code Object} on jOOQ 3.14, {@code org.jooq.Geometry} on jOOQ 3.15+)
+ * @param <U> the user type (always JTS {@code Geometry} in practice)
  * @author gaoyunfeng
  */
-public abstract class AbstractPostgisBinding implements Binding<Object, Geometry> {
+public abstract class AbstractPostgisBinding<T, U> implements Binding<T, Geometry> {
 
     /**
      * Standard GeometryFactory (delegated to {@link PostgisCodec#GEOMETRY_FACTORY}).
+     *
+     * @deprecated since 1.0.5 — use {@link PostgisCodec#GEOMETRY_FACTORY} instead;
+     *             this constant will be removed in 2.0.
      */
+    @Deprecated
     public static final GeometryFactory GEOMETRY_FACTORY = PostgisCodec.GEOMETRY_FACTORY;
 
     /**
      * GeometryFactory supporting 4D coordinates (XYZM) (delegated to {@link PostgisCodec#PACKED_GEOMETRY_FACTORY}).
+     *
+     * @deprecated since 1.0.5 — use {@link PostgisCodec#PACKED_GEOMETRY_FACTORY} instead;
+     *             this constant will be removed in 2.0.
      */
+    @Deprecated
     public static final GeometryFactory PACKED_GEOMETRY_FACTORY = PostgisCodec.PACKED_GEOMETRY_FACTORY;
 
     /**
-     * Protected default constructor for subclasses.
+     * Protected default constructor for subclasses (raw / jOOQ 3.14 instantiation).
      */
     protected AbstractPostgisBinding() {
+    }
+
+    /**
+     * Protected constructor matching the jOOQ {@code <genericBinding>} instantiation protocol
+     * ({@code new Binding<T, U>(Class<T>, Class<U>)}, used by jOOQ 3.15+ code generation).
+     * The arguments are recorded for diagnostics only; the binding behaviour is independent
+     * of the database-side type.
+     *
+     * @param databaseType the database-side type class reported by jOOQ codegen
+     * @param userType     the user type class (JTS {@code Geometry})
+     */
+    protected AbstractPostgisBinding(Class<T> databaseType, Class<U> userType) {
     }
 
     /**
@@ -46,8 +78,9 @@ public abstract class AbstractPostgisBinding implements Binding<Object, Geometry
 
     @Override
     @NotNull
-    public Converter<Object, Geometry> converter() {
-        return SpatialConverter.INSTANCE;
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    public Converter<T, Geometry> converter() {
+        return (Converter) SpatialConverter.INSTANCE;
     }
 
     /**
@@ -139,13 +172,13 @@ public abstract class AbstractPostgisBinding implements Binding<Object, Geometry
     @Override
     @SuppressWarnings("try")
     public void get(BindingGetResultSetContext<Geometry> ctx) throws SQLException {
-        ctx.value(converter().from(ctx.resultSet().getObject(ctx.index())));
+        ctx.value(PostgisCodec.from(ctx.resultSet().getObject(ctx.index())));
     }
 
     @Override
     @SuppressWarnings("try")
     public void get(BindingGetStatementContext<Geometry> ctx) throws SQLException {
-        ctx.value(converter().from(ctx.statement().getObject(ctx.index())));
+        ctx.value(PostgisCodec.from(ctx.statement().getObject(ctx.index())));
     }
 
     @Override
@@ -167,8 +200,10 @@ public abstract class AbstractPostgisBinding implements Binding<Object, Geometry
      *
      * @param geom the geometry to serialize
      * @return spatial representation string
-     * @see PostgisCodec#toSpatialRepresentation(Geometry)
+     * @deprecated since 1.0.5 — use {@link PostgisCodec#toSpatialRepresentation(Geometry)} instead;
+     *             this forwarder will be removed in 2.0.
      */
+    @Deprecated
     public static String toSpatialRepresentation(Geometry geom) {
         return PostgisCodec.toSpatialRepresentation(geom);
     }
@@ -178,8 +213,10 @@ public abstract class AbstractPostgisBinding implements Binding<Object, Geometry
      *
      * @param wkt WKT string
      * @return normalized WKT string
-     * @see PostgisCodec#fixWktEmptySpacing(String)
+     * @deprecated since 1.0.5 — use {@link PostgisCodec#fixWktEmptySpacing(String)} instead;
+     *             this forwarder will be removed in 2.0.
      */
+    @Deprecated
     public static String fixWktEmptySpacing(String wkt) {
         return PostgisCodec.fixWktEmptySpacing(wkt);
     }
@@ -188,8 +225,10 @@ public abstract class AbstractPostgisBinding implements Binding<Object, Geometry
      * Validates that all non-empty coordinates within the geometry have consistent dimensions.
      *
      * @param geom geometry to validate
-     * @see PostgisCodec#validateDimensionConsistency(Geometry)
+     * @deprecated since 1.0.5 — use {@link PostgisCodec#validateDimensionConsistency(Geometry)} instead;
+     *             this forwarder will be removed in 2.0.
      */
+    @Deprecated
     public static void validateDimensionConsistency(Geometry geom) {
         PostgisCodec.validateDimensionConsistency(geom);
     }
@@ -199,16 +238,21 @@ public abstract class AbstractPostgisBinding implements Binding<Object, Geometry
      *
      * @param s candidate string
      * @return true if string is even-length hex starting with 00 or 01
-     * @see PostgisCodec#isHex(String)
+     * @deprecated since 1.0.5 — use {@link PostgisCodec#isHex(String)} instead;
+     *             this forwarder will be removed in 2.0.
      */
+    @Deprecated
     public static boolean isHex(String s) {
         return PostgisCodec.isHex(s);
     }
 
     /**
      * Filter to verify all non-empty coordinates within a geometry have consistent dimensions.
-     * Backward-compatible alias for {@link PostgisCodec.DimensionFilter}.
+     *
+     * @deprecated since 1.0.5 — use {@link PostgisCodec} / {@code DimensionAnalyzer} instead;
+     *             this class will be removed in 2.0.
      */
+    @Deprecated
     public static class DimensionFilter extends PostgisCodec.DimensionFilter {
         /**
          * Default constructor.

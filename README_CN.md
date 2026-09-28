@@ -3,6 +3,7 @@
 [English](README.md) | 中文说明
 
 [![Maven Central](https://img.shields.io/maven-central/v/top.yunitytech.maven/jooq-postgis.svg?color=brightgreen)](https://central.sonatype.com/artifact/top.yunitytech.maven/jooq-postgis)
+[![CI](https://github.com/upowerman/jooq-postgis/actions/workflows/ci.yml/badge.svg)](https://github.com/upowerman/jooq-postgis/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Java](https://img.shields.io/badge/Java-8%2B-orange.svg?logo=openjdk&logoColor=white)](https://www.oracle.com/java/)
 [![jOOQ](https://img.shields.io/badge/jOOQ-3.14%2B-008080.svg)](https://www.jooq.org/)
@@ -32,9 +33,9 @@
 
 ## 环境要求
 
-- Java 8+
-- jOOQ 3.14+
-- PostgreSQL 及 PostGIS 扩展
+- Java 8+（以 `--release 8` 编译）
+- jOOQ 3.14+（运行时；jOOQ 3.15+ 上做代码生成需为每个 `<forcedType>` 追加 `<genericBinding>true</genericBinding>`，见下文）
+- PostgreSQL 及 PostGIS 扩展（仅支持 PostgreSQL/PostGIS 方言）
 - JTS Core 1.18+
 
 ## Maven 依赖
@@ -45,7 +46,7 @@
 <dependency>
     <groupId>top.yunitytech.maven</groupId>
     <artifactId>jooq-postgis</artifactId>
-    <version>1.0.4</version>
+    <version>1.0.5</version>
 </dependency>
 ```
 
@@ -71,7 +72,7 @@
         <dependency>
             <groupId>top.yunitytech.maven</groupId>
             <artifactId>jooq-postgis</artifactId>
-            <version>1.0.3</version>
+            <version>1.0.5</version>
         </dependency>
     </dependencies>
     <configuration>
@@ -99,6 +100,11 @@
 ```
 
 ### 2. 读取与写入几何对象
+
+> **jOOQ 3.15+ 注意：** jOOQ 3.15 起原生引入了空间类型支持，代码生成器会将 `geometry`
+> 列解析为 `org.jooq.Geometry` 而非 `OTHER`。在 jOOQ 3.15+（含 3.19.x）上，请为上方**两个**
+> `<forcedType>` 都追加 `<genericBinding>true</genericBinding>` —— 绑定类将通过其
+> `(Class<T>, Class<U>)` 构造器实例化，生成的代码才能通过编译。jOOQ 3.14 上该元素不存在，必须省略。
 
 代码生成完成后，生成实体表中的空间字段将被自动强类型化为 `org.locationtech.jts.geom.Geometry`：
 
@@ -160,9 +166,37 @@ Boolean isNearby = dsl.select(
 // 反序列化 PGobject、EWKB Hex、EWKT 或 byte[] 为 JTS Geometry
 Geometry geom = PostgisCodec.from(databaseObject);
 
-// 将 JTS Geometry 转换为 PostGIS 最佳持久化表示（2D/3D 转 EWKB Hex，3DM/4D 转 EWKT）
+// 将 JTS Geometry 转换为 PostGIS 持久化表示（全维度统一输出大端 EWKB Hex：
+// XY / XYZ / XYM / XYZM，SRID 非零时内嵌）
 String repr = PostgisCodec.toSpatialRepresentation(geom);
 ```
+
+## 正确性与边界语义
+
+编解码器的维度处理尽可能对齐 PostgreSQL / PostGIS 语义：
+
+- **NaN 是合法坐标值，不是维度信号。** `LINESTRING Z(0 0 NaN, 1 1 5)`（PostGIS 接受存储，`ST_NDims = 3`）可无损往返：同一几何内任一坐标携带非 NaN 值即视为该维度存在。
+- **类型化 JTS 序列优先。** 以 `CoordinateXYM` / `CoordinateXYZM`（或带 measures 的 packed 序列）构建的几何，即使 M 值全为 NaN 也保留其声明维度；普通 `Coordinate` 序列按坐标值判定。
+- **集合维度强约束。** `GEOMETRYCOLLECTION(POINT(1 2), POINT Z(3 4 5))` 会抛出 `IllegalArgumentException` 拒绝，与 PostGIS 行为一致（`Dimensions mismatch in lwcollection`）。
+- **外来（非 PostGIS）WKB 按叶子标志解码。** 部分 ISO WKB 写出器在集合头部少写维度标志。`fromWkb` 对每个叶子几何的 Z/M 标志建档（JTS 本身按各元素自身标志解析），因此 2D 集合头下的 `POINT M` 子元素会正确解码为 XYM，而不会把 M 静默误读为 Z。同一字节流中叶子标志必须一致。
+- **EMPTY 几何**以 2D EWKB 序列化；空几何上的维度标记不保留。
+- **typmod 与 SRID 由 PostgreSQL 强制。** `geometry(Point,4326)` 约束与 SRID 不匹配由服务端拒绝——用户构建的几何请务必调用 `setSRID()`。Binding 本身只负责传输。
+- **仅支持 PostgreSQL / PostGIS。** 无论配置何种 SQL 方言都会渲染 `?::geometry` / `?::geography` 强转，不支持其他数据库。
+- **更严格的 codegen 匹配（可选）。** 若库中存在名称含 `geometry`/`geography` 的自定义类型，可使用锚定正则（如 `(?i:^geometry$)`）。
+
+## 测试与 CI
+
+集成测试连接真实 PostgreSQL + PostGIS 运行，不可达时自动跳过：
+
+```bash
+docker run --name postgis-test -e POSTGRES_PASSWORD=postgres -p 5432:5432 -d postgis/postgis:16-3.4
+docker exec postgis-test createdb -U postgres test_db
+mvn test
+```
+
+连接配置按优先级取系统属性（`test.db.url`、`test.db.user`、`test.db.password`）或环境变量（`TEST_DB_URL`、`TEST_DB_USER`、`TEST_DB_PASSWORD`），默认 `localhost:5432/test_db`（postgres/postgres）。
+
+CI（GitHub Actions）在每次 push / pull request 运行完整矩阵：JDK 17/21 × jOOQ 3.14.16/3.19.10，数据库为 `postgis/postgis:16-3.4` 服务容器。
 
 ## 开源协议
 

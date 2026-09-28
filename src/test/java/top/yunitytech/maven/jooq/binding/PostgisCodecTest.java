@@ -100,13 +100,16 @@ class PostgisCodecTest {
         point.setSRID(4326);
 
         String repr = PostgisCodec.toSpatialRepresentation(point);
-        assertThat(repr).startsWith("SRID=4326;POINT M");
+        // Since 1.0.5 M geometries serialize as big-endian EWKB hex with the M flag (0x40000000)
+        assertThat(PostgisCodec.isHex(repr)).isTrue();
+        assertThat(repr).startsWith("0060"); // big-endian, M flag | SRID flag on a point
 
         Geometry decoded = PostgisCodec.from(repr);
         assertThat(decoded).isNotNull().isInstanceOf(Point.class);
         assertThat(decoded.getSRID()).isEqualTo(4326);
         assertThat(Double.isNaN(decoded.getCoordinate().getZ())).isTrue();
         assertThat(decoded.getCoordinate().getM()).isEqualTo(1695888000.0);
+        assertThat(decoded.getCoordinate()).isInstanceOf(CoordinateXYM.class);
     }
 
     @Test
@@ -123,14 +126,45 @@ class PostgisCodecTest {
         poly.setSRID(4490);
 
         String repr = PostgisCodec.toSpatialRepresentation(poly);
-        assertThat(repr).startsWith("SRID=4490;POLYGON ZM");
+        assertThat(PostgisCodec.isHex(repr)).isTrue();
+        assertThat(repr).startsWith("00E0"); // big-endian, Z | M | SRID flags on a polygon
 
         Geometry decoded = PostgisCodec.from(repr);
         assertThat(decoded).isNotNull().isInstanceOf(Polygon.class);
         assertThat(decoded.getSRID()).isEqualTo(4490);
         Coordinate c0 = decoded.getCoordinates()[0];
+        assertThat(c0).isInstanceOf(CoordinateXYZM.class);
         assertThat(c0.getZ()).isEqualTo(10.0);
         assertThat(c0.getM()).isEqualTo(100.0);
+    }
+
+    @Test
+    @DisplayName("Codec: XYM with all-NaN M preserves the M dimension through EWKB (regression: WKTWriter dropped the marker)")
+    void testRoundTripXYMWithNanM() {
+        Point point = gf.createPoint(new CoordinateXYM(1, 2, Double.NaN));
+        point.setSRID(4326);
+
+        String repr = PostgisCodec.toSpatialRepresentation(point);
+        assertThat(PostgisCodec.isHex(repr)).isTrue();
+
+        Geometry decoded = PostgisCodec.from(repr);
+        Coordinate c = decoded.getCoordinate();
+        assertThat(c).isInstanceOf(CoordinateXYM.class);
+        assertThat(Double.isNaN(c.getM())).isTrue();
+        assertThat(Double.isNaN(c.getZ())).isTrue();
+    }
+
+    @Test
+    @DisplayName("Codec: XYZM with NaN M preserves both Z and M dimensions")
+    void testRoundTripXYZMWithNanM() {
+        Point point = gf.createPoint(new CoordinateXYZM(1, 2, 3, Double.NaN));
+        point.setSRID(4326);
+
+        Geometry decoded = PostgisCodec.from(PostgisCodec.toSpatialRepresentation(point));
+        Coordinate c = decoded.getCoordinate();
+        assertThat(c).isInstanceOf(CoordinateXYZM.class);
+        assertThat(c.getZ()).isEqualTo(3.0);
+        assertThat(Double.isNaN(c.getM())).isTrue();
     }
 
     @Test
