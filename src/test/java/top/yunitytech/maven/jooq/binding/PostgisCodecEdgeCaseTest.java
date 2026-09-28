@@ -16,6 +16,8 @@ import org.locationtech.jts.geom.MultiPoint;
 import org.locationtech.jts.geom.Point;
 import org.locationtech.jts.geom.Polygon;
 import org.locationtech.jts.geom.impl.CoordinateArraySequence;
+import org.locationtech.jts.io.WKBReader;
+import org.locationtech.jts.io.WKBWriter;
 import top.yunitytech.maven.jooq.binding.internal.DimensionAnalyzer;
 
 import java.nio.ByteBuffer;
@@ -25,14 +27,26 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Edge-case regression tests complementing {@link PostgisCodecWkbStructuralTest}:
- * leaf-flag combinations not covered there (container/child mismatches that stay
- * leaf-heterogeneous vs. repairable nesting), ISO M/Z linestring codes, partial-NaN
- * M round-trips, per-type dimension round-trips, and large geometries.
+ * Edge-case regression tests for {@link PostgisCodec}:
+ * foreign (non-PostGIS) WKB leaf-flag combinations (both the repairable uniform case and the
+ * heterogeneous rejections), ISO WKB type codes, big-endian streams, NaN ordinate semantics,
+ * malformed input handling, per-type dimension round-trips, and large geometries.
+ * <p>
+ * Byte sequences marked "PostGIS-produced" were captured from PostgreSQL 16 / PostGIS 3.4;
+ * "foreign" sequences emulate ISO WKB writers whose collection headers under-declare
+ * dimension flags (JTS parses every element by its own flags).
  */
 class PostgisCodecEdgeCaseTest {
 
     private final GeometryFactory gf = PostgisCodec.GEOMETRY_FACTORY;
+
+    /** PostGIS output for GEOMETRYCOLLECTION M(POINT M(1 2 3), POINT M(4 5 6)) — top header carries the M flag. */
+    private static final String POSTGIS_GC_M =
+            "0107000040020000000101000040000000000000f03f000000000000004000000000000008400101000040000000000000104000000000000014400000000000001840";
+
+    /** PostGIS output for LINESTRING Z(0 0 NaN, 1 1 5) — legal NaN Z ordinate, Z flag set. */
+    private static final String POSTGIS_LINESTRING_Z_WITH_NAN =
+            "01020000800200000000000000000000000000000000000000000000000000f87f000000000000f03f000000000000f03f0000000000001440";
 
     // ------------------------------------------------------------------
     // Little-endian WKB building helpers (foreign / non-canonical inputs)
@@ -70,6 +84,51 @@ class PostgisCodecEdgeCaseTest {
     @Nested
     @DisplayName("Foreign WKB leaf-flag combinations")
     class ForeignWkbConsistencyTests {
+
+        @Test
+        @DisplayName("2D container with uniform M-flagged children decodes to XYM (M must not silently become Z)")
+        void foreign2dContainerWithMChildrenDecodesToXym() {
+            // ISO WKB leaves the dimension to each element; collection headers may under-declare.
+            byte[] wkb = wkbCollection(0x00000007,
+                    wkbPoint(0x40000001, 1, 2, 3),
+                    wkbPoint(0x40000001, 4, 5, 6));
+
+            Geometry g = PostgisCodec.from(wkb);
+            assertThat(g).isInstanceOf(GeometryCollection.class);
+            GeometryCollection gc = (GeometryCollection) g;
+            assertThat(gc.getNumGeometries()).isEqualTo(2);
+            assertThat(gc.getGeometryN(0).getCoordinate()).isInstanceOf(CoordinateXYM.class);
+            assertThat(gc.getGeometryN(0).getCoordinate().getM()).isEqualTo(3.0);
+            assertThat(Double.isNaN(gc.getGeometryN(0).getCoordinate().getZ())).isTrue();
+            assertThat(gc.getGeometryN(1).getCoordinate().getM()).isEqualTo(6.0);
+
+            // same via the hex string path
+            assertThat(PostgisCodec.from(WKBWriter.toHex(wkb).toLowerCase())
+                    .getGeometryN(0).getCoordinate().getM()).isEqualTo(3.0);
+        }
+
+        @Test
+        @DisplayName("2D container with uniform ZM-flagged children decodes to XYZM (M preserved)")
+        void foreign2dContainerWithZmChildrenDecodesToXyzm() {
+            byte[] wkb = wkbCollection(0x00000007,
+                    wkbPoint(0xC0000001, 1, 2, 3, 4),
+                    wkbPoint(0xC0000001, 5, 6, 7, 8));
+
+            Coordinate c0 = PostgisCodec.from(wkb).getGeometryN(0).getCoordinate();
+            assertThat(c0).isInstanceOf(CoordinateXYZM.class);
+            assertThat(c0.getZ()).isEqualTo(3.0);
+            assertThat(c0.getM()).isEqualTo(4.0);
+        }
+
+        @Test
+        @DisplayName("Canonical PostGIS GEOMETRYCOLLECTION M (flagged header) decodes to XYM")
+        void postgisGcMDecodesToXym() {
+            Geometry g = PostgisCodec.from(POSTGIS_GC_M);
+            assertThat(g).isInstanceOf(GeometryCollection.class);
+            Coordinate c0 = g.getGeometryN(0).getCoordinate();
+            assertThat(c0).isInstanceOf(CoordinateXYM.class);
+            assertThat(c0.getM()).isEqualTo(3.0);
+        }
 
         @Test
         @DisplayName("Z container with an M child (leaf flags Z vs M) is rejected as mixed-dimension")
@@ -146,12 +205,30 @@ class PostgisCodecEdgeCaseTest {
     class IsoWkbTests {
 
         @Test
+        @DisplayName("ISO WKB POINT Z (type code 1001) decodes with Z retained")
+        void isoZPoint() {
+            Geometry g = PostgisCodec.from(wkbPoint(1001, 1, 2, 3));
+            assertThat(g).isInstanceOf(Point.class);
+            assertThat(g.getCoordinate().getZ()).isEqualTo(3.0);
+        }
+
+        @Test
         @DisplayName("ISO WKB POINT M (type code 2001) decodes to CoordinateXYM")
         void isoMPoint() {
             Geometry g = PostgisCodec.from(wkbPoint(2001, 1, 2, 3));
             assertThat(g.getCoordinate()).isInstanceOf(CoordinateXYM.class);
             assertThat(g.getCoordinate().getM()).isEqualTo(3.0);
             assertThat(Double.isNaN(g.getCoordinate().getZ())).isTrue();
+        }
+
+        @Test
+        @DisplayName("ISO WKB POINT ZM (type code 3001) decodes to CoordinateXYZM")
+        void isoZmPoint() {
+            Geometry g = PostgisCodec.from(wkbPoint(3001, 1, 2, 3, 4));
+            Coordinate c = g.getCoordinate();
+            assertThat(c).isInstanceOf(CoordinateXYZM.class);
+            assertThat(c.getZ()).isEqualTo(3.0);
+            assertThat(c.getM()).isEqualTo(4.0);
         }
 
         @Test
@@ -167,11 +244,61 @@ class PostgisCodecEdgeCaseTest {
             assertThat(g.getCoordinates()[0].getZ()).isEqualTo(3.0);
             assertThat(g.getCoordinates()[1].getZ()).isEqualTo(6.0);
         }
+
+        @Test
+        @DisplayName("Big-endian EWKB POINT M decodes to CoordinateXYM with SRID")
+        void bigEndianEwkbMPoint() {
+            ByteBuffer b = ByteBuffer.allocate(64).order(ByteOrder.BIG_ENDIAN);
+            b.put((byte) 0).putInt(0x60000001).putInt(4326);
+            b.putDouble(8.0).putDouble(5.0).putDouble(2.5);
+
+            Geometry g = PostgisCodec.from(toArray(b));
+            assertThat(g.getCoordinate()).isInstanceOf(CoordinateXYM.class);
+            assertThat(g.getSRID()).isEqualTo(4326);
+            assertThat(g.getCoordinate().getM()).isEqualTo(2.5);
+        }
     }
 
     @Nested
     @DisplayName("NaN ordinate semantics (PostGIS-compatible)")
     class NanDimensionSemanticsTests {
+
+        @Test
+        @DisplayName("PostGIS-produced LINESTRING Z with partial NaN Z reads back without throwing")
+        void postgisPartialNanZLineIsReadable() {
+            Geometry g = PostgisCodec.from(POSTGIS_LINESTRING_Z_WITH_NAN);
+
+            assertThat(g).isInstanceOf(LineString.class);
+            Coordinate[] coords = g.getCoordinates();
+            assertThat(coords).hasSize(2);
+            assertThat(Double.isNaN(coords[0].getZ())).isTrue();
+            assertThat(coords[1].getZ()).isEqualTo(5.0);
+        }
+
+        @Test
+        @DisplayName("PostGIS NaN Z linestring round-trips keeping the Z dimension flag")
+        void postgisPartialNanZLineRoundTripKeepsZFlag() {
+            Geometry geom = PostgisCodec.from(POSTGIS_LINESTRING_Z_WITH_NAN);
+            String repr = PostgisCodec.toSpatialRepresentation(geom);
+
+            assertThat(PostgisCodec.isHex(repr)).isTrue();
+            // Z flag (0x80000000) preserved; JTS WKBWriter always emits the SRID flag too,
+            // even for SRID 0, so the big-endian type word starts with 0xA (SRID|Z).
+            assertThat(repr).startsWith("00A0");
+
+            Geometry back = PostgisCodec.from(repr);
+            assertThat(Double.isNaN(back.getCoordinates()[0].getZ())).isTrue();
+            assertThat(back.getCoordinates()[1].getZ()).isEqualTo(5.0);
+        }
+
+        @Test
+        @DisplayName("All-NaN Z point serializes as 2D (documented plain-Coordinate semantics)")
+        void allNanZPointSerializesAs2D() {
+            Point p = gf.createPoint(new Coordinate(1, 2, Double.NaN));
+            String repr = PostgisCodec.toSpatialRepresentation(p);
+            // 2D point type (0x20000001 = JTS always-on SRID flag | POINT, no Z/M dimension flags)
+            assertThat(repr).startsWith("0020000001");
+        }
 
         @Test
         @DisplayName("XYZM linestring with partial NaN M round-trips via EWKB with NaN preserved")
@@ -229,6 +356,39 @@ class PostgisCodecEdgeCaseTest {
                     new Coordinate(1, 1, Double.NaN)});
             assertThat(DimensionAnalyzer.analyze(allNanZ).getDimension())
                     .isEqualTo(DimensionAnalyzer.CoordinateDimension.XY);
+        }
+    }
+
+    @Nested
+    @DisplayName("Malformed WKB input handling")
+    class MalformedWkbTests {
+
+        @Test
+        @DisplayName("Truncated WKB is rejected with a clear message")
+        void truncatedRejected() {
+            assertThatThrownBy(() -> PostgisCodec.fromWkb(new byte[]{0x01, 0x01, 0x00}))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("Malformed WKB");
+        }
+
+        @Test
+        @DisplayName("Coordinate count overrunning the byte array is rejected")
+        void overrunningCountRejected() {
+            // linestring header claiming 100 points with no payload
+            byte[] bytes = WKBReader.hexToBytes("010200000064000000");
+            assertThatThrownBy(() -> PostgisCodec.fromWkb(bytes))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("Malformed WKB");
+        }
+
+        @Test
+        @DisplayName("Unknown geometry type code is rejected")
+        void unknownTypeRejected() {
+            // type 42 in the low 16 bits, no flags
+            byte[] bytes = WKBReader.hexToBytes("012A000000");
+            assertThatThrownBy(() -> PostgisCodec.fromWkb(bytes))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("Unsupported WKB geometry type");
         }
     }
 

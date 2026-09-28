@@ -10,7 +10,6 @@ import org.locationtech.jts.io.ParseException;
 import org.locationtech.jts.io.WKBReader;
 import org.locationtech.jts.io.WKBWriter;
 import org.locationtech.jts.io.WKTReader;
-import org.locationtech.jts.io.WKTWriter;
 
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicReference;
@@ -45,10 +44,6 @@ class SpatialWkbPoolTest {
         WKTReader wktReader1 = SpatialWkbPool.getWktReader();
         WKTReader wktReader2 = SpatialWkbPool.getWktReader();
         assertThat(wktReader1).isNotNull().isSameAs(wktReader2);
-
-        WKTWriter wktWriter1 = SpatialWkbPool.getWktWriter4D();
-        WKTWriter wktWriter2 = SpatialWkbPool.getWktWriter4D();
-        assertThat(wktWriter1).isNotNull().isSameAs(wktWriter2);
     }
 
     @Test

@@ -5,12 +5,11 @@ import org.locationtech.jts.geom.impl.PackedCoordinateSequenceFactory;
 import org.locationtech.jts.io.WKBReader;
 import org.locationtech.jts.io.WKBWriter;
 import org.locationtech.jts.io.WKTReader;
-import org.locationtech.jts.io.WKTWriter;
 
 /**
  * Thread-local cache pool for JTS spatial readers and writers.
  * <p>
- * JTS {@link WKBReader}, {@link WKBWriter}, {@link WKTReader}, and {@link WKTWriter}
+ * JTS {@link WKBReader}, {@link WKBWriter}, and {@link WKTReader}
  * are stateful and not thread-safe. Reallocating them per operation causes unnecessary GC overhead
  * under high database throughput. This pool caches instances per-thread with zero contention.
  *
@@ -43,9 +42,6 @@ public final class SpatialWkbPool {
 
     private static final ThreadLocal<WKTReader> WKT_READER =
             ThreadLocal.withInitial(() -> new WKTReader(GEOMETRY_FACTORY));
-
-    private static final ThreadLocal<WKTWriter> WKT_WRITER_4D =
-            ThreadLocal.withInitial(() -> new WKTWriter(4));
 
     private SpatialWkbPool() {
         // Utility pool
@@ -80,12 +76,5 @@ public final class SpatialWkbPool {
      */
     public static WKTReader getWktReader() {
         return WKT_READER.get();
-    }
-
-    /**
-     * Returns a thread-local {@link WKTWriter} configured for 4D output.
-     */
-    public static WKTWriter getWktWriter4D() {
-        return WKT_WRITER_4D.get();
     }
 }

@@ -46,33 +46,21 @@ public final class DimensionAnalyzer {
      * Enumeration of detected coordinate dimensions.
      */
     public enum CoordinateDimension {
-        XY(2, false, false),
-        XYZ(3, true, false),
-        XYM(3, false, true),
-        XYZM(4, true, true),
-        EMPTY(0, false, false),
-        MIXED(-1, false, false);
+        XY(2),
+        XYZ(3),
+        XYM(3),
+        XYZM(4),
+        EMPTY(0),
+        MIXED(-1);
 
         private final int coordinateDimension;
-        private final boolean hasZ;
-        private final boolean hasM;
 
-        CoordinateDimension(int coordinateDimension, boolean hasZ, boolean hasM) {
+        CoordinateDimension(int coordinateDimension) {
             this.coordinateDimension = coordinateDimension;
-            this.hasZ = hasZ;
-            this.hasM = hasM;
         }
 
         public int getCoordinateDimension() {
             return coordinateDimension;
-        }
-
-        public boolean hasZ() {
-            return hasZ;
-        }
-
-        public boolean hasM() {
-            return hasM;
         }
     }
 
@@ -308,18 +296,6 @@ public final class DimensionAnalyzer {
 
         public boolean hasSequence() {
             return hasSequence;
-        }
-
-        /**
-         * Kept for backward compatibility; single-geometry profiles are never mixed
-         * (collection strictness is handled by {@link #analyze(Geometry)}).
-         */
-        public boolean isMixed() {
-            return false;
-        }
-
-        public boolean isEmpty() {
-            return !hasSequence;
         }
     }
 }
