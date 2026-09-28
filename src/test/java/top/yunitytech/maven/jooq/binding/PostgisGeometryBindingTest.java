@@ -765,11 +765,32 @@ class PostgisGeometryBindingTest {
             String expectedHex = (String) converter.to(point);
             assertThat(sb.toString()).isEqualTo("'" + expectedHex + "'::geometry");
 
+            sb.setLength(0);
+            geographyBinding.sql(ctx);
+            assertThat(sb.toString()).isEqualTo("'" + expectedHex + "'::geography");
+
             // Inlined null
             sb.setLength(0);
             BindingSQLContext<Geometry> nullCtx = createBindingSQLContext(null, ParamType.INLINED, sb);
             binding.sql(nullCtx);
             assertThat(sb.toString()).isEqualTo("NULL::geometry");
+
+            sb.setLength(0);
+            geographyBinding.sql(nullCtx);
+            assertThat(sb.toString()).isEqualTo("NULL::geography");
+        }
+
+        @Test
+        @DisplayName("sql() renders named variable when paramType is NAMED")
+        void testNamedSqlRendering() {
+            StringBuilder sb = new StringBuilder();
+            BindingSQLContext<Geometry> ctx = createBindingSQLContext(null, ParamType.NAMED, sb);
+            binding.sql(ctx);
+            assertThat(sb.toString()).isEqualTo(":1::geometry");
+
+            sb.setLength(0);
+            geographyBinding.sql(ctx);
+            assertThat(sb.toString()).isEqualTo(":1::geography");
         }
     }
 
@@ -927,6 +948,13 @@ class PostgisGeometryBindingTest {
                         sqlBuffer.append(args[0]);
                         return proxy;
                     }
+                    if ("visit".equals(method.getName())) {
+                        QueryPart part = (QueryPart) args[0];
+                        if (part != null) {
+                            sqlBuffer.append(org.jooq.impl.DSL.using(SQLDialect.POSTGRES).renderInlined(part));
+                        }
+                        return proxy;
+                    }
                     if ("paramType".equals(method.getName())) {
                         return paramType;
                     }
@@ -939,6 +967,9 @@ class PostgisGeometryBindingTest {
                 (proxy, method, args) -> {
                     if ("value".equals(method.getName())) return value;
                     if ("render".equals(method.getName())) return renderContext;
+                    if ("variable".equals(method.getName())) {
+                        return paramType == ParamType.NAMED ? ":1" : "?";
+                    }
                     return null;
                 });
     }

@@ -38,7 +38,7 @@ Add `jooq-postgis` to your `pom.xml`:
 <dependency>
     <groupId>top.yunitytech.maven</groupId>
     <artifactId>jooq-postgis</artifactId>
-    <version>1.0.3</version>
+    <version>1.0.4</version>
 </dependency>
 ```
 
@@ -143,6 +143,18 @@ Boolean isNearby = dsl.select(
         DSL.field("ST_DWithin({0}, {1}, 200000)", Boolean.class, A.GEOG, B.GEOG)
     ).from(A).crossJoin(B)
     .fetchOne(0, Boolean.class);
+```
+
+### 4. Standalone Spatial Codec (`PostgisCodec`)
+
+You can also use `PostgisCodec` directly outside of jOOQ (e.g. in custom JDBC queries, REST controllers, or queue consumers):
+
+```java
+// Decode PGobject, EWKB Hex, EWKT, or byte[] to JTS Geometry
+Geometry geom = PostgisCodec.from(databaseObject);
+
+// Encode JTS Geometry to PostGIS representation (EWKB Hex for 2D/3D, EWKT for 3DM/4D)
+String repr = PostgisCodec.toSpatialRepresentation(geom);
 ```
 
 ## License
