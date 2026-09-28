@@ -8,7 +8,6 @@ English | [中文说明](README_CN.md)
 [![jOOQ](https://img.shields.io/badge/jOOQ-3.14%2B-008080.svg)](https://www.jooq.org/)
 [![PostGIS](https://img.shields.io/badge/PostGIS-3.x-275B89.svg?logo=postgresql&logoColor=white)](https://postgis.net/)
 [![JTS](https://img.shields.io/badge/JTS-1.18%2B-green.svg)](https://github.com/locationtech/jts)
-[![Spring Boot](https://img.shields.io/badge/Spring%20Boot-Compatible-6DB33F.svg?logo=springboot&logoColor=white)](https://spring.io/projects/spring-boot)
 
 Lightweight, production-grade jOOQ spatial bindings for PostgreSQL / PostGIS mapping directly to JTS `org.locationtech.jts.geom.Geometry`.
 
