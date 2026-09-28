@@ -26,10 +26,11 @@
   treated as "mixed dimension".
 - Malformed / truncated WKB fails fast with a clear `Malformed WKB/EWKB input` message;
   parse-exception messages summarize the input instead of embedding it in full.
-- Deprecated the legacy forwarders on `AbstractPostgisBinding`
+- Removed the legacy static forwarders on `AbstractPostgisBinding`
   (`toSpatialRepresentation`, `fixWktEmptySpacing`, `validateDimensionConsistency`, `isHex`,
-  `DimensionFilter`, `GEOMETRY_FACTORY`, `PACKED_GEOMETRY_FACTORY`) in favour of
-  `PostgisCodec` — scheduled for removal in 2.0.
+  `DimensionFilter`, `GEOMETRY_FACTORY`, `PACKED_GEOMETRY_FACTORY`), the deprecated
+  `PostgisCodec.DimensionFilter` alias, and the now-unused `SpatialWkbPool.getWktWriter4D()` —
+  all dead since the 1.0.4 codec split. Use `PostgisCodec` as the single codec entry point.
 
 ### Added
 

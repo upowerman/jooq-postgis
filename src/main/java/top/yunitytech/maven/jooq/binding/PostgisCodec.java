@@ -670,16 +670,4 @@ public final class PostgisCodec {
                 ? text
                 : text.substring(0, MAX_EXCEPTION_SNIPPET_LENGTH) + "...(" + text.length() + " chars)";
     }
-
-    /**
-     * Filter to verify all non-empty coordinates within a geometry have consistent dimensions (XY / XYZ / XYM / XYZM).
-     *
-     * @deprecated Kept for backward compatibility. Use {@link DimensionAnalyzer} instead.
-     */
-    @Deprecated
-    public static class DimensionFilter extends DimensionAnalyzer.DimensionFilter {
-        public DimensionFilter() {
-            super();
-        }
-    }
 }

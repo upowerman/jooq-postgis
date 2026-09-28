@@ -4,7 +4,6 @@ import org.jetbrains.annotations.NotNull;
 import org.jooq.*;
 import org.jooq.conf.ParamType;
 import org.locationtech.jts.geom.Geometry;
-import org.locationtech.jts.geom.GeometryFactory;
 import org.postgresql.util.PGobject;
 
 import java.sql.SQLException;
@@ -32,24 +31,6 @@ import java.sql.Types;
  * @author gaoyunfeng
  */
 public abstract class AbstractPostgisBinding<T, U> implements Binding<T, Geometry> {
-
-    /**
-     * Standard GeometryFactory (delegated to {@link PostgisCodec#GEOMETRY_FACTORY}).
-     *
-     * @deprecated since 1.0.5 — use {@link PostgisCodec#GEOMETRY_FACTORY} instead;
-     *             this constant will be removed in 2.0.
-     */
-    @Deprecated
-    public static final GeometryFactory GEOMETRY_FACTORY = PostgisCodec.GEOMETRY_FACTORY;
-
-    /**
-     * GeometryFactory supporting 4D coordinates (XYZM) (delegated to {@link PostgisCodec#PACKED_GEOMETRY_FACTORY}).
-     *
-     * @deprecated since 1.0.5 — use {@link PostgisCodec#PACKED_GEOMETRY_FACTORY} instead;
-     *             this constant will be removed in 2.0.
-     */
-    @Deprecated
-    public static final GeometryFactory PACKED_GEOMETRY_FACTORY = PostgisCodec.PACKED_GEOMETRY_FACTORY;
 
     /**
      * Protected default constructor for subclasses (raw / jOOQ 3.14 instantiation).
@@ -189,76 +170,5 @@ public abstract class AbstractPostgisBinding<T, U> implements Binding<T, Geometr
     @Override
     public void get(BindingGetSQLInputContext<Geometry> ctx) throws SQLException {
         throw new SQLFeatureNotSupportedException("SQLInput not supported");
-    }
-
-    // =========================================================================
-    // Backward Compatibility Forwarders to PostgisCodec
-    // =========================================================================
-
-    /**
-     * Converts a JTS Geometry to an optimal representation for PostgreSQL.
-     *
-     * @param geom the geometry to serialize
-     * @return spatial representation string
-     * @deprecated since 1.0.5 — use {@link PostgisCodec#toSpatialRepresentation(Geometry)} instead;
-     *             this forwarder will be removed in 2.0.
-     */
-    @Deprecated
-    public static String toSpatialRepresentation(Geometry geom) {
-        return PostgisCodec.toSpatialRepresentation(geom);
-    }
-
-    /**
-     * Fixes JTS WKTWriter missing space before EMPTY for dimensioned types.
-     *
-     * @param wkt WKT string
-     * @return normalized WKT string
-     * @deprecated since 1.0.5 — use {@link PostgisCodec#fixWktEmptySpacing(String)} instead;
-     *             this forwarder will be removed in 2.0.
-     */
-    @Deprecated
-    public static String fixWktEmptySpacing(String wkt) {
-        return PostgisCodec.fixWktEmptySpacing(wkt);
-    }
-
-    /**
-     * Validates that all non-empty coordinates within the geometry have consistent dimensions.
-     *
-     * @param geom geometry to validate
-     * @deprecated since 1.0.5 — use {@link PostgisCodec#validateDimensionConsistency(Geometry)} instead;
-     *             this forwarder will be removed in 2.0.
-     */
-    @Deprecated
-    public static void validateDimensionConsistency(Geometry geom) {
-        PostgisCodec.validateDimensionConsistency(geom);
-    }
-
-    /**
-     * Checks if a string is a valid hexadecimal EWKB representation.
-     *
-     * @param s candidate string
-     * @return true if string is even-length hex starting with 00 or 01
-     * @deprecated since 1.0.5 — use {@link PostgisCodec#isHex(String)} instead;
-     *             this forwarder will be removed in 2.0.
-     */
-    @Deprecated
-    public static boolean isHex(String s) {
-        return PostgisCodec.isHex(s);
-    }
-
-    /**
-     * Filter to verify all non-empty coordinates within a geometry have consistent dimensions.
-     *
-     * @deprecated since 1.0.5 — use {@link PostgisCodec} / {@code DimensionAnalyzer} instead;
-     *             this class will be removed in 2.0.
-     */
-    @Deprecated
-    public static class DimensionFilter extends PostgisCodec.DimensionFilter {
-        /**
-         * Default constructor.
-         */
-        public DimensionFilter() {
-            super();
-        }
     }
 }
