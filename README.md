@@ -1,24 +1,28 @@
 # jooq-postgis
 
-jOOQ Binding for PostGIS geometry types — provides seamless bidirectional conversion between PostGIS `geometry` columns and JTS `Geometry` objects in jOOQ.
+English | [中文说明](README_CN.md)
+
+Lightweight jOOQ Binding for PostGIS `geometry` and `geography` types — provides seamless bidirectional conversion between PostgreSQL spatial columns and JTS `Geometry` objects.
 
 ## Features
 
-- Bidirectional mapping between PostGIS geometry and JTS `Geometry`
-- Automatic SRID coordinate transformation on write (default: EPSG:4326)
-- Configurable target SRID via constructor or system property
-- Coordinate transformation cache for better performance
-- Auto-detects 2D/3D geometry dimensions
+- **Pure JTS**: Zero GeoTools dependency, fast, lightweight, and Maven Central friendly.
+- **Full Type Support**: Supports both PostGIS `geometry` and `geography` types.
+- **EWKB Native**: Preserves SRID and coordinate dimensions (2D / 3D) seamlessly across read and write.
+- **Binary & Hex Tolerant**: Handles PGobject, hex strings, and binary byte streams.
+- **Safe PreparedStatement & Batching**: Robust SQL rendering for NULL values and inlined parameters (`ParamType.INLINED`).
+- **jOOQ Codegen Ready**: Easily integrated with `jooq-codegen-maven` to auto-generate JTS Geometry fields.
 
 ## Requirements
 
 - Java 8+
 - jOOQ 3.14+
 - PostgreSQL with PostGIS extension
-- JTS (locationtech-jts)
-- GeoTools (gt-main, gt-referencing)
+- JTS Core 1.18+
 
-## Maven
+## Maven Dependency
+
+Add this dependency to your project:
 
 ```xml
 <dependency>
@@ -28,77 +32,93 @@ jOOQ Binding for PostGIS geometry types — provides seamless bidirectional conv
 </dependency>
 ```
 
-All dependencies (jOOQ, PostgreSQL JDBC, GeoTools) are `provided` scope — make sure they are available in your project.
+> **Note:** `org.jooq:jooq` and `org.postgresql:postgresql` are `provided` scope. Make sure your application supplies them. `org.locationtech.jts:jts-core` is automatically included as a direct dependency.
 
 ## Usage
 
 ### 1. Configure jOOQ Code Generation
 
-In your jOOQ code generation configuration, register the binding as a custom type:
+In your `jooq-codegen-maven` plugin configuration, add `jooq-postgis` to the plugin's `<dependencies>` and configure `<forcedTypes>`:
 
 ```xml
-<database>
-    <name>org.jooq.meta.postgres.PostgresDatabase</name>
-    <!-- ... -->
-
-    <customTypes>
-        <customType>
-            <name>org.locationtech.jts.geom.Geometry</name>
-            <converter>top.yunitytech.maven.jooq.binding.PostgisGeometryBinding$GeometryConverter</converter>
-        </customType>
-    </customTypes>
-
-    <forcedTypes>
-        <forcedType>
-            <userType>org.locationtech.jts.geom.Geometry</userType>
-            <binding>top.yunitytech.maven.jooq.binding.PostgisGeometryBinding</binding>
-            <includeExpression>.*\.geom(etry)?$</includeExpression>
-            <includeTypes>geometry</includeTypes>
-        </forcedType>
-    </forcedTypes>
-</database>
+<plugin>
+    <groupId>org.jooq</groupId>
+    <artifactId>jooq-codegen-maven</artifactId>
+    <version>${jooq.version}</version>
+    <dependencies>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <version>${postgresql.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>top.yunitytech.maven</groupId>
+            <artifactId>jooq-postgis</artifactId>
+            <version>1.0.1</version>
+        </dependency>
+    </dependencies>
+    <configuration>
+        <generator>
+            <database>
+                <name>org.jooq.meta.postgres.PostgresDatabase</name>
+                <!-- Include your schemas / tables -->
+                <forcedTypes>
+                    <forcedType>
+                        <userType>org.locationtech.jts.geom.Geometry</userType>
+                        <binding>top.yunitytech.maven.jooq.binding.PostgisGeometryBinding</binding>
+                        <includeTypes>(?i:geometry|geography)</includeTypes>
+                    </forcedType>
+                </forcedTypes>
+            </database>
+            <!-- Target package and directory -->
+        </generator>
+    </configuration>
+</plugin>
 ```
 
 ### 2. Read & Write Geometry
 
-After code generation, geometry columns will be typed as JTS `Geometry`:
+After code generation, spatial columns in generated records will be typed as `org.locationtech.jts.geom.Geometry`:
 
 ```java
-// Write — SRID is automatically transformed to target (default EPSG:4326)
-Point point = new GeometryFactory().createPoint(new Coordinate(116.4, 39.9));
+GeometryFactory gf = new GeometryFactory();
+
+// Write (Insert / Update) — SRID is preserved in EWKB
+Point point = gf.createPoint(new Coordinate(116.4074, 39.9042));
 point.setSRID(4326);
 
 dsl.insertInto(PLACES)
+   .set(PLACES.ID, 1L)
    .set(PLACES.GEOM, point)
    .execute();
 
-// Read — returns JTS Geometry in the database SRID
+// Read (Select) — Returns JTS Geometry with database SRID
 Geometry geom = dsl.select(PLACES.GEOM)
                    .from(PLACES)
+                   .where(PLACES.ID.eq(1L))
                    .fetchOne(PLACES.GEOM);
+
+System.out.println("SRID: " + geom.getSRID()); // 4326
+System.out.println("WKT: " + geom.toText());   // POINT (116.4074 39.9042)
 ```
 
-### 3. Custom Target SRID
+### 3. Spatial Queries & Transformations
 
-By default, geometries are transformed to **EPSG:4326** on write. You can change this:
+For PostGIS spatial functions (such as `ST_Transform`, `ST_DWithin`, `ST_Distance`), use jOOQ's plain SQL templates:
 
-**Via system property:**
+```java
+// Example: ST_Transform to EPSG:3857 in SQL
+Field<Geometry> transformed = DSL.field(
+    "ST_Transform({0}, 3857)", 
+    PLACES.GEOM.getDataType(), 
+    PLACES.GEOM
+);
 
+Geometry geom3857 = dsl.select(transformed)
+                       .from(PLACES)
+                       .where(PLACES.ID.eq(1L))
+                       .fetchOne(transformed);
 ```
--Djooq.postgis.targetSrid=3857
-```
-
-**Via constructor:**
-
-```xml
-<forcedType>
-    <userType>org.locationtech.jts.geom.Geometry</userType>
-    <binding>top.yunitytech.maven.jooq.binding.PostgisGeometryBinding</binding>
-    <!-- In code, use: new PostgisGeometryBinding(3857) -->
-</forcedType>
-```
-
-> **Note:** Geometries must have a non-zero SRID set before writing, otherwise an exception is thrown. Ensure you call `geometry.setSRID(srid)` before persisting.
 
 ## License
 
