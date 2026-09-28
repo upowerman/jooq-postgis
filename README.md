@@ -197,7 +197,7 @@ mvn test
 
 Connection settings resolve from system properties (`test.db.url`, `test.db.user`, `test.db.password`) or environment variables (`TEST_DB_URL`, `TEST_DB_USER`, `TEST_DB_PASSWORD`), defaulting to `localhost:5432/test_db` with `postgres/postgres`.
 
-CI (GitHub Actions) runs the full suite on every push and pull request — a JDK 17/21 × jOOQ 3.14.16/3.19.10 matrix against a `postgis/postgis:16-3.4` service container.
+CI (GitHub Actions) runs the full suite on every push and pull request — a JDK 17/21 × jOOQ 3.14.16/3.19.10 matrix against a `postgis/postgis:16-3.4` service container. When testing locally against jOOQ 3.16+ with `-Djooq.version=...`, add `-Dmaven.compiler.release=17`: jOOQ 3.16+ requires Java 17+ at runtime and its reactive-API signatures (`java.util.concurrent.Flow`) are invisible to `--release 8` compilation. The released artifact remains Java 8 bytecode.
 
 ## License
 
