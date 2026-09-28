@@ -8,6 +8,7 @@ import org.jooq.impl.DSL;
 import org.jooq.impl.SQLDataType;
 import org.junit.jupiter.api.*;
 import org.locationtech.jts.geom.*;
+import org.locationtech.jts.geom.impl.CoordinateArraySequence;
 import org.locationtech.jts.io.WKTReader;
 
 import java.sql.Connection;
@@ -15,6 +16,7 @@ import java.sql.DriverManager;
 import java.sql.SQLException;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class PostgisIntegrationTest {
@@ -25,15 +27,18 @@ class PostgisIntegrationTest {
 
     private Connection connection;
     private DSLContext dsl;
-    private final GeometryFactory gf = new GeometryFactory();
+    private final GeometryFactory gf = AbstractPostgisBinding.GEOMETRY_FACTORY;
 
-    // Define table and fields with PostgisGeometryBinding
+    // Define table and fields with distinct PostgisGeometryBinding and PostgisGeographyBinding
     private final Table<?> TEST_SPATIAL = DSL.table("test_spatial");
     private final Field<Long> ID = DSL.field("id", SQLDataType.BIGINT);
     private final Field<String> NAME = DSL.field("name", SQLDataType.VARCHAR);
     private final Field<Geometry> GEOM = DSL.field("geom", SQLDataType.OTHER.asConvertedDataType(new PostgisGeometryBinding()));
-    private final Field<Geometry> GEOG = DSL.field("geog", SQLDataType.OTHER.asConvertedDataType(new PostgisGeometryBinding()));
+    private final Field<Geometry> GEOG = DSL.field("geog", SQLDataType.OTHER.asConvertedDataType(new PostgisGeographyBinding()));
     private final Field<Geometry> GEOM_3D = DSL.field("geom_3d", SQLDataType.OTHER.asConvertedDataType(new PostgisGeometryBinding()));
+    private final Field<Geometry> GEOM_M = DSL.field("geom_m", SQLDataType.OTHER.asConvertedDataType(new PostgisGeometryBinding()));
+    private final Field<Geometry> GEOM_4D = DSL.field("geom_4d", SQLDataType.OTHER.asConvertedDataType(new PostgisGeometryBinding()));
+    private final Field<Geometry> GEOM_ANY = DSL.field("geom_any", SQLDataType.OTHER.asConvertedDataType(new PostgisGeometryBinding()));
 
     @BeforeAll
     void initDatabase() {
@@ -49,7 +54,10 @@ class PostgisIntegrationTest {
                             "  name VARCHAR(100)," +
                             "  geom GEOMETRY(Geometry, 4326)," +
                             "  geog GEOGRAPHY(Point, 4326)," +
-                            "  geom_3d GEOMETRY(GeometryZ, 3857)" +
+                            "  geom_3d GEOMETRY(GeometryZ, 3857)," +
+                            "  geom_m GEOMETRY(GeometryM, 4326)," +
+                            "  geom_4d GEOMETRY(GeometryZM, 4326)," +
+                            "  geom_any GEOMETRY" +
                             ")"
             );
         } catch (SQLException e) {
@@ -464,5 +472,251 @@ class PostgisIntegrationTest {
                 DSL.field("ST_Contains(geom, ST_SetSRID(ST_Point(150, 150), 4326))", Boolean.class)
         ).from(TEST_SPATIAL).where(ID.eq(37L)).fetchOne(0, Boolean.class);
         assertThat(containsOutside).isFalse();
+    }
+
+    @Test
+    @DisplayName("Dimension 4D: Insert and select Point ZM (EPSG:4326 XYZM)")
+    void testInsertAndSelectPoint4D_ZM() {
+        Point p4d = gf.createPoint(new CoordinateXYZM(116.4, 39.9, 100.0, 88.5));
+        p4d.setSRID(4326);
+
+        dsl.insertInto(TEST_SPATIAL)
+                .set(ID, 50L)
+                .set(NAME, "Point ZM Satellite Measurement")
+                .set(GEOM_4D, p4d)
+                .execute();
+
+        Geometry result = dsl.select(GEOM_4D).from(TEST_SPATIAL).where(ID.eq(50L)).fetchOne(GEOM_4D);
+
+        assertThat(result).isNotNull().isInstanceOf(Point.class);
+        assertThat(result.getSRID()).isEqualTo(4326);
+        Coordinate coord = result.getCoordinate();
+        assertThat(coord.x).isEqualTo(116.4);
+        assertThat(coord.y).isEqualTo(39.9);
+        assertThat(coord.getZ()).isEqualTo(100.0);
+        assertThat(coord.getM()).isEqualTo(88.5);
+    }
+
+    @Test
+    @DisplayName("Dimension 3DM: Insert and select Point M (EPSG:4326 XYM)")
+    void testInsertAndSelectPoint3DM_XYM() {
+        Point p3dm = gf.createPoint(new CoordinateXYM(116.4, 39.9, 77.2));
+        p3dm.setSRID(4326);
+
+        dsl.insertInto(TEST_SPATIAL)
+                .set(ID, 51L)
+                .set(NAME, "Point M Measurement")
+                .set(GEOM_M, p3dm)
+                .execute();
+
+        Geometry result = dsl.select(GEOM_M).from(TEST_SPATIAL).where(ID.eq(51L)).fetchOne(GEOM_M);
+
+        assertThat(result).isNotNull().isInstanceOf(Point.class);
+        assertThat(result.getSRID()).isEqualTo(4326);
+        Coordinate coord = result.getCoordinate();
+        assertThat(coord.x).isEqualTo(116.4);
+        assertThat(coord.y).isEqualTo(39.9);
+        assertThat(Double.isNaN(coord.getZ())).isTrue();
+        assertThat(coord.getM()).isEqualTo(77.2);
+    }
+
+    @Test
+    @DisplayName("Geography: Native spherical distance and ST_DWithin without type casting")
+    void testNativeGeographyDistanceAndDWithin() {
+        // Shanghai
+        Point shanghai = gf.createPoint(new Coordinate(121.4737, 31.2304));
+        shanghai.setSRID(4326);
+
+        // Hangzhou (~160 km away)
+        Point hangzhou = gf.createPoint(new Coordinate(120.1551, 30.2741));
+        hangzhou.setSRID(4326);
+
+        dsl.insertInto(TEST_SPATIAL).set(ID, 60L).set(NAME, "Shanghai").set(GEOG, shanghai).execute();
+        dsl.insertInto(TEST_SPATIAL).set(ID, 61L).set(NAME, "Hangzhou").set(GEOG, hangzhou).execute();
+
+        // Native ST_Distance on geography columns (returns distance in meters)
+        Double distanceMeters = dsl.select(
+                DSL.field("ST_Distance(a.geog, b.geog)", Double.class)
+        ).from(TEST_SPATIAL.as("a"))
+                .crossJoin(TEST_SPATIAL.as("b"))
+                .where(DSL.field("a.id", Long.class).eq(60L))
+                .and(DSL.field("b.id", Long.class).eq(61L))
+                .fetchOne(0, Double.class);
+
+        assertThat(distanceMeters).isNotNull();
+        // Distance is ~160-175 km (160,000 - 175,000 meters)
+        assertThat(distanceMeters).isBetween(150_000.0, 180_000.0);
+
+        // Native ST_DWithin on geography columns (threshold 200 km)
+        Boolean within200km = dsl.select(
+                DSL.field("ST_DWithin(a.geog, b.geog, 200000)", Boolean.class)
+        ).from(TEST_SPATIAL.as("a"))
+                .crossJoin(TEST_SPATIAL.as("b"))
+                .where(DSL.field("a.id", Long.class).eq(60L))
+                .and(DSL.field("b.id", Long.class).eq(61L))
+                .fetchOne(0, Boolean.class);
+
+        assertThat(within200km).isTrue();
+    }
+
+    @Test
+    @DisplayName("Real DB: CGCS2000 (EPSG:4490) remote sensing spatial data round-trip")
+    void testCGCS2000RemoteSensingData() {
+        // Point in Beijing using CGCS2000 (SRID 4490)
+        Point bj4490 = gf.createPoint(new Coordinate(116.4074, 39.9042));
+        bj4490.setSRID(4490);
+
+        dsl.insertInto(TEST_SPATIAL)
+                .set(ID, 70L)
+                .set(NAME, "Beijing CGCS2000")
+                .set(GEOM_ANY, bj4490)
+                .execute();
+
+        Geometry resPoint = dsl.select(GEOM_ANY).from(TEST_SPATIAL).where(ID.eq(70L)).fetchOne(GEOM_ANY);
+        assertThat(resPoint).isNotNull().isInstanceOf(Point.class);
+        assertThat(resPoint.getSRID()).isEqualTo(4490);
+        assertThat(resPoint.getCoordinate().x).isEqualTo(116.4074);
+        assertThat(resPoint.getCoordinate().y).isEqualTo(39.9042);
+
+        // Satellite observation footprint polygon in CGCS2000
+        Coordinate[] footprint = new Coordinate[]{
+                new Coordinate(115.0, 39.0), new Coordinate(117.0, 39.0),
+                new Coordinate(117.0, 41.0), new Coordinate(115.0, 41.0),
+                new Coordinate(115.0, 39.0)
+        };
+        Polygon poly4490 = gf.createPolygon(footprint);
+        poly4490.setSRID(4490);
+
+        dsl.insertInto(TEST_SPATIAL).set(ID, 71L).set(NAME, "AOI CGCS2000").set(GEOM_ANY, poly4490).execute();
+
+        Geometry resPoly = dsl.select(GEOM_ANY).from(TEST_SPATIAL).where(ID.eq(71L)).fetchOne(GEOM_ANY);
+        assertThat(resPoly).isNotNull().isInstanceOf(Polygon.class);
+        assertThat(resPoly.getSRID()).isEqualTo(4490);
+        assertThat(resPoly.equalsExact(poly4490)).isTrue();
+    }
+
+    @Test
+    @DisplayName("Real DB: EMPTY geometries round-trip (Point EMPTY, Polygon EMPTY, GeometryCollection EMPTY)")
+    void testEmptyGeometriesInDatabase() {
+        Point emptyPoint = gf.createPoint();
+        emptyPoint.setSRID(4326);
+
+        Polygon emptyPoly = gf.createPolygon();
+        emptyPoly.setSRID(3857);
+
+        GeometryCollection emptyGC = gf.createGeometryCollection();
+        emptyGC.setSRID(4490);
+
+        dsl.insertInto(TEST_SPATIAL).set(ID, 80L).set(NAME, "Empty Point").set(GEOM_ANY, emptyPoint).execute();
+        dsl.insertInto(TEST_SPATIAL).set(ID, 81L).set(NAME, "Empty Polygon").set(GEOM_ANY, emptyPoly).execute();
+        dsl.insertInto(TEST_SPATIAL).set(ID, 82L).set(NAME, "Empty GC").set(GEOM_ANY, emptyGC).execute();
+
+        Geometry rPoint = dsl.select(GEOM_ANY).from(TEST_SPATIAL).where(ID.eq(80L)).fetchOne(GEOM_ANY);
+        assertThat(rPoint).isNotNull().isInstanceOf(Point.class);
+        assertThat(rPoint.isEmpty()).isTrue();
+        assertThat(rPoint.getSRID()).isEqualTo(4326);
+
+        Geometry rPoly = dsl.select(GEOM_ANY).from(TEST_SPATIAL).where(ID.eq(81L)).fetchOne(GEOM_ANY);
+        assertThat(rPoly).isNotNull().isInstanceOf(Polygon.class);
+        assertThat(rPoly.isEmpty()).isTrue();
+        assertThat(rPoly.getSRID()).isEqualTo(3857);
+
+        Geometry rGC = dsl.select(GEOM_ANY).from(TEST_SPATIAL).where(ID.eq(82L)).fetchOne(GEOM_ANY);
+        assertThat(rGC).isNotNull().isInstanceOf(GeometryCollection.class);
+        assertThat(rGC.isEmpty()).isTrue();
+        assertThat(rGC.getSRID()).isEqualTo(4490);
+    }
+
+    @Test
+    @DisplayName("Real DB: Complex Polygon with hole and M / ZM coordinates")
+    void testComplexPolygonWithHoleMAndZM() {
+        // Polygon M (XYM) with hole
+        CoordinateXYM[] shellM = new CoordinateXYM[]{
+                new CoordinateXYM(0, 0, 1), new CoordinateXYM(0, 20, 2),
+                new CoordinateXYM(20, 20, 3), new CoordinateXYM(20, 0, 4), new CoordinateXYM(0, 0, 1)
+        };
+        CoordinateXYM[] holeM = new CoordinateXYM[]{
+                new CoordinateXYM(5, 5, 5), new CoordinateXYM(5, 10, 6),
+                new CoordinateXYM(10, 10, 7), new CoordinateXYM(10, 5, 8), new CoordinateXYM(5, 5, 5)
+        };
+        Polygon polyM = gf.createPolygon(
+                gf.createLinearRing(new CoordinateArraySequence(shellM)),
+                new LinearRing[]{gf.createLinearRing(new CoordinateArraySequence(holeM))}
+        );
+        polyM.setSRID(4490);
+
+        dsl.insertInto(TEST_SPATIAL).set(ID, 90L).set(NAME, "Polygon M with Hole").set(GEOM_ANY, polyM).execute();
+
+        Geometry resPolyM = dsl.select(GEOM_ANY).from(TEST_SPATIAL).where(ID.eq(90L)).fetchOne(GEOM_ANY);
+        assertThat(resPolyM).isNotNull().isInstanceOf(Polygon.class);
+        Polygon rpM = (Polygon) resPolyM;
+        assertThat(rpM.getSRID()).isEqualTo(4490);
+        assertThat(rpM.getNumInteriorRing()).isEqualTo(1);
+        Coordinate smc = rpM.getExteriorRing().getCoordinateN(0);
+        assertThat(Double.isNaN(smc.getZ())).isTrue();
+        assertThat(smc.getM()).isEqualTo(1.0);
+        Coordinate hmc = rpM.getInteriorRingN(0).getCoordinateN(0);
+        assertThat(Double.isNaN(hmc.getZ())).isTrue();
+        assertThat(hmc.getM()).isEqualTo(5.0);
+
+        // Polygon ZM (XYZM) with hole
+        CoordinateXYZM[] shellZM = new CoordinateXYZM[]{
+                new CoordinateXYZM(0, 0, 10, 1), new CoordinateXYZM(0, 20, 10, 2),
+                new CoordinateXYZM(20, 20, 10, 3), new CoordinateXYZM(20, 0, 10, 4), new CoordinateXYZM(0, 0, 10, 1)
+        };
+        CoordinateXYZM[] holeZM = new CoordinateXYZM[]{
+                new CoordinateXYZM(5, 5, 15, 5), new CoordinateXYZM(5, 10, 15, 6),
+                new CoordinateXYZM(10, 10, 15, 7), new CoordinateXYZM(10, 5, 15, 8), new CoordinateXYZM(5, 5, 15, 5)
+        };
+        Polygon polyZM = gf.createPolygon(
+                gf.createLinearRing(new CoordinateArraySequence(shellZM)),
+                new LinearRing[]{gf.createLinearRing(new CoordinateArraySequence(holeZM))}
+        );
+        polyZM.setSRID(4490);
+
+        dsl.insertInto(TEST_SPATIAL).set(ID, 91L).set(NAME, "Polygon ZM with Hole").set(GEOM_ANY, polyZM).execute();
+
+        Geometry resPolyZM = dsl.select(GEOM_ANY).from(TEST_SPATIAL).where(ID.eq(91L)).fetchOne(GEOM_ANY);
+        assertThat(resPolyZM).isNotNull().isInstanceOf(Polygon.class);
+        Polygon rpZM = (Polygon) resPolyZM;
+        assertThat(rpZM.getSRID()).isEqualTo(4490);
+        assertThat(rpZM.getNumInteriorRing()).isEqualTo(1);
+        Coordinate szmc = rpZM.getExteriorRing().getCoordinateN(0);
+        assertThat(szmc.getZ()).isEqualTo(10.0);
+        assertThat(szmc.getM()).isEqualTo(1.0);
+    }
+
+    @Test
+    @DisplayName("Real DB: GeometryCollection with M and ZM components")
+    void testGeometryCollectionMAndZM() {
+        Point pM = gf.createPoint(new CoordinateXYM(10, 20, 30));
+        LineString lsM = gf.createLineString(new CoordinateArraySequence(new CoordinateXYM[]{
+                new CoordinateXYM(0, 0, 1), new CoordinateXYM(5, 5, 2)
+        }));
+        GeometryCollection gcM = gf.createGeometryCollection(new Geometry[]{pM, lsM});
+        gcM.setSRID(4326);
+
+        dsl.insertInto(TEST_SPATIAL).set(ID, 95L).set(NAME, "GC M").set(GEOM_ANY, gcM).execute();
+
+        Geometry resGCM = dsl.select(GEOM_ANY).from(TEST_SPATIAL).where(ID.eq(95L)).fetchOne(GEOM_ANY);
+        assertThat(resGCM).isNotNull().isInstanceOf(GeometryCollection.class);
+        GeometryCollection rgcM = (GeometryCollection) resGCM;
+        assertThat(rgcM.getNumGeometries()).isEqualTo(2);
+        assertThat(rgcM.getGeometryN(0).getCoordinate().getM()).isEqualTo(30.0);
+        assertThat(Double.isNaN(rgcM.getGeometryN(0).getCoordinate().getZ())).isTrue();
+    }
+
+    @Test
+    @DisplayName("Real DB: Attempting to insert mixed-dimension GeometryCollection throws IllegalArgumentException")
+    void testRejectMixedDimensionInsertion() {
+        Point p2d = gf.createPoint(new Coordinate(1, 2));
+        Point p3d = gf.createPoint(new Coordinate(3, 4, 5));
+        GeometryCollection mixed = gf.createGeometryCollection(new Geometry[]{p2d, p3d});
+        mixed.setSRID(4326);
+
+        assertThatThrownBy(() ->
+                dsl.insertInto(TEST_SPATIAL).set(ID, 99L).set(NAME, "Mixed").set(GEOM_ANY, mixed).execute()
+        ).hasRootCauseInstanceOf(IllegalArgumentException.class)
+                .hasStackTraceContaining("Mixed-dimension");
     }
 }
