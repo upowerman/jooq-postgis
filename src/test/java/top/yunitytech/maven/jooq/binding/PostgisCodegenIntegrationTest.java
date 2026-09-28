@@ -155,7 +155,10 @@ class PostgisCodegenIntegrationTest {
         compilerArgs.add("-cp");
         compilerArgs.add(classpath);
         compilerArgs.add("-d");
-        compilerArgs.add("target/test-classes");
+        // Compile into an isolated directory (not target/test-classes): generated classes
+        // compiled against one jOOQ version must not leak onto the test classpath of
+        // subsequent runs against a different -Djooq.version (VerifyError on final methods).
+        compilerArgs.add("target/generated-test-classes");
         compilerArgs.addAll(javaFiles);
 
         int exitCode = compiler.run(null, null, null, compilerArgs.toArray(new String[0]));
