@@ -35,6 +35,7 @@
 
 - Java 8+（以 `--release 8` 编译）
 - jOOQ 3.14+（运行时；jOOQ 3.15+ 上做代码生成需为每个 `<forcedType>` 追加 `<genericBinding>true</genericBinding>`，见下文）
+- **jOOQ 3.14–3.19 上做代码生成需将 pgjdbc 保持在 ≤ 42.7.4。** pgjdbc 42.7.5+ 按 JDBC 规范将元数据列标签改为大写，而 jOOQ 按大小写敏感读取，导致所有表的代码生成失败（[jOOQ #17873](https://github.com/jOOQ/jOOQ/issues/17873)——仅在 jOOQ 3.20.0 修复）。本库的运行时行为不受驱动版本影响；jOOQ 3.20+ 的代码生成对任意 pgjdbc 均可用。
 - PostgreSQL 及 PostGIS 扩展（仅支持 PostgreSQL/PostGIS 方言）
 - JTS Core 1.18+
 

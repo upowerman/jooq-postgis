@@ -34,11 +34,10 @@ class PostgisCodegenIntegrationTest {
     @DisplayName("Codegen Verification: jOOQ code generator generates valid Geometry fields with PostGIS bindings")
     void testJooqCodegenWithPostgisBindings() throws Exception {
         // 1. Verify DB connection and table schema.
-        // A dedicated key-less table isolates codegen from primary-key introspection:
-        // jOOQ 3.14's codegen looks up "key_seq" case-sensitively in the key metadata
-        // result, which pgjdbc 42.7.5+ reports with uppercase ("KEY_SEQ") labels —
-        // any table WITH a key fails to generate on that combination (jOOQ 3.15+ is
-        // unaffected). The binding wiring under test does not depend on keys.
+        // A dedicated table keeps this test's DDL independent of the shared test_spatial
+        // table used by the runtime integration tests (keys are irrelevant to the binding
+        // wiring under verification).
+        String driverVersion = null;
         try (Connection conn = DriverManager.getConnection(JDBC_URL, JDBC_USER, JDBC_PASS);
              Statement stmt = conn.createStatement()) {
             stmt.execute("CREATE EXTENSION IF NOT EXISTS postgis");
@@ -55,8 +54,18 @@ class PostgisCodegenIntegrationTest {
                     "  geom_4d GEOMETRY(GeometryZM, 4326)," +
                     "  geom_any GEOMETRY" +
                     ")");
+            driverVersion = conn.getMetaData().getDriverVersion();
         } catch (Exception e) {
             Assumptions.abort("PostgreSQL/PostGIS is not reachable at " + JDBC_URL + ", skipping codegen test: " + e.getMessage());
+        }
+        if (pgjdbcIncompatibleWithJooqCodegen(driverVersion, org.jooq.Constants.FULL_VERSION)) {
+            Assumptions.abort(
+                    "jOOQ code generation before 3.20.0 is incompatible with pgjdbc 42.7.5+ "
+                            + "(driver " + driverVersion + ", jOOQ " + org.jooq.Constants.FULL_VERSION
+                            + "): the driver now reports JDBC-spec-compliant uppercase metadata labels"
+                            + " while jOOQ reads them case-sensitively (jOOQ issue #17873, fixed in 3.20.0 only)."
+                            + " Skipping codegen verification - runtime bindings are unaffected."
+                            + " For codegen on jOOQ <= 3.19, pin org.postgresql:postgresql to 42.7.4, or use jOOQ 3.20+.");
         }
 
         // 2. Configure jOOQ Codegen Configuration programmatically.
@@ -193,6 +202,45 @@ class PostgisCodegenIntegrationTest {
             assertThat(returnedGeom.getCoordinate().y).isEqualTo(20.0);
             assertThat(returnedGeom.getSRID()).isEqualTo(4326);
         }
+    }
+
+    /**
+     * pgjdbc 42.7.5+ reports JDBC-spec-compliant uppercase metadata column labels, while
+     * jOOQ reads them case-sensitively until the fix in 3.20.0 (jOOQ issue #17873, no
+     * 3.14–3.19 backport). Code generation fails for every table on that combination.
+     */
+    private static boolean pgjdbcIncompatibleWithJooqCodegen(String driverVersion, String jooqVersion) {
+        int[] driver = parseVersion(driverVersion);
+        int[] jooq = parseVersion(jooqVersion);
+        return compare(driver, 42, 7, 5) >= 0 && compare(jooq, 3, 20, 0) < 0;
+    }
+
+    private static int[] parseVersion(String version) {
+        int[] out = {0, 0, 0};
+        if (version == null) {
+            return out;
+        }
+        String[] parts = version.trim().split(" ")[0].split("\\.");
+        for (int i = 0; i < out.length && i < parts.length; i++) {
+            try {
+                out[i] = Integer.parseInt(parts[i].replaceAll("[^0-9].*$", ""));
+            } catch (NumberFormatException ignored) {
+                // non-numeric segment: leave 0
+            }
+        }
+        return out;
+    }
+
+    private static int compare(int[] actual, int major, int minor, int patch) {
+        int cmp = Integer.compare(actual[0], major);
+        if (cmp != 0) {
+            return cmp;
+        }
+        cmp = Integer.compare(actual.length > 1 ? actual[1] : 0, minor);
+        if (cmp != 0) {
+            return cmp;
+        }
+        return Integer.compare(actual.length > 2 ? actual[2] : 0, patch);
     }
 
     /**

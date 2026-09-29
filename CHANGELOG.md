@@ -25,6 +25,22 @@
 - **Pre-compiled regex pattern:**
   `fixWktEmptySpacing` now uses a static pre-compiled `WKT_EMPTY_SPACING_PATTERN` instead of recompiling regex on every invocation.
 
+### Dependencies & Compatibility
+
+- **pgjdbc 42.7.4 → 42.7.13, assertj-core 3.25.3 → 3.27.7** (closes all four high-severity
+  Dependabot alerts): pgjdbc — CVE-2025-49146 (channelBinding=require fallback, fixed 42.7.7),
+  CVE-2026-42198 (SCRAM PBKDF2 client DoS, fixed 42.7.11), CVE-2026-54291 (channel-binding
+  authentication downgrade, fixed 42.7.12; affects 42.7.4–42.7.11); assertj — CVE-2026-24400
+  (`isXmlEqualTo` XXE, fixed 3.27.7). Both are provided/test scope; the published artifact's
+  behavior is unchanged.
+- **Known ecosystem constraint (documented, not fixable here):** pgjdbc 42.7.5+ reports
+  JDBC-spec-compliant uppercase metadata column labels, which jOOQ reads case-sensitively —
+  code generation fails for every table on jOOQ ≤ 3.19 ([jOOQ #17873](https://github.com/jOOQ/jOOQ/issues/17873),
+  fixed in jOOQ 3.20.0 only). The codegen integration test now aborts with an explanatory
+  message on that combination; CI gained a jOOQ 3.20 leg where codegen is fully verified.
+  **Users running codegen on jOOQ ≤ 3.19 should pin org.postgresql:postgresql to 42.7.4;
+  runtime usage of this library is unaffected by the driver version.**
+
 ## 1.0.7 (2026-09-29)
 
 ### Fixed
