@@ -35,7 +35,7 @@ Designed specifically for projects using `jooq-codegen-maven` to auto-generate t
 
 - Java 8+ (compiled with `--release 8`)
 - jOOQ 3.14+ (runtime; for code generation on jOOQ 3.15+ add `<genericBinding>true</genericBinding>` to each `<forcedType>` — see below)
-- **Code generation on jOOQ 3.14–3.19 requires pgjdbc ≤ 42.7.4.** pgjdbc 42.7.5+ reports JDBC-spec-compliant uppercase metadata labels, which jOOQ reads case-sensitively, breaking code generation for every table ([jOOQ #17873](https://github.com/jOOQ/jOOQ/issues/17873) — fixed in jOOQ 3.20.0 only). Runtime usage of this library is unaffected by the driver version. jOOQ 3.20+ codegen works with any pgjdbc.
+- **Code generation on jOOQ 3.14–3.19 requires pgjdbc ≤ 42.7.4.** pgjdbc 42.7.5+ reports JDBC-spec-compliant uppercase metadata labels, which jOOQ reads case-sensitively, breaking code generation for every table ([jOOQ #17873](https://github.com/jOOQ/jOOQ/issues/17873) — fixed in jOOQ 3.20.0 only). Runtime usage of this library is unaffected by the driver version. jOOQ 3.20+ codegen works with any pgjdbc, but jOOQ 3.20 ships Java 21 bytecode and therefore requires Java 21.
 - PostgreSQL with PostGIS extension (PostgreSQL/PostGIS dialect only)
 - JTS Core 1.18+
 
