@@ -33,11 +33,22 @@ Designed specifically for projects using `jooq-codegen-maven` to auto-generate t
 
 ## Requirements
 
-- Java 8+ (compiled with `--release 8`)
-- jOOQ 3.14+ (runtime; for code generation on jOOQ 3.15+ add `<genericBinding>true</genericBinding>` to each `<forcedType>` — see below)
-- **Code generation on jOOQ 3.14–3.19 requires pgjdbc ≤ 42.7.4.** pgjdbc 42.7.5+ reports JDBC-spec-compliant uppercase metadata labels, which jOOQ reads case-sensitively, breaking code generation for every table ([jOOQ #17873](https://github.com/jOOQ/jOOQ/issues/17873) — fixed in jOOQ 3.20.0 only). Runtime usage of this library is unaffected by the driver version. jOOQ 3.20+ codegen works with any pgjdbc, but jOOQ 3.20 ships Java 21 bytecode and therefore requires Java 21.
-- PostgreSQL with PostGIS extension (PostgreSQL/PostGIS dialect only)
-- JTS Core 1.18+
+- **Java**: Java 8, 11, 17, 21+ (artifact compiled with `--release 8`, bytecode version 52.0; includes JPMS `Automatic-Module-Name`)
+- **jOOQ**: 3.14+ (runtime; for code generation on jOOQ 3.15+ add `<genericBinding>true</genericBinding>` to each `<forcedType>` — see below)
+- **Database**: PostgreSQL with PostGIS extension (PostgreSQL/PostGIS dialect only)
+- **JTS**: JTS Core 1.18+
+
+### JDK & jOOQ Compatibility Matrix
+
+| JDK Version | Compatible jOOQ Line | Library Support | Notes |
+| :--- | :--- | :---: | :--- |
+| **Java 8** | `jOOQ 3.14.x` | ✅ Full Support | jOOQ 3.14 is the final open-source line supporting Java 8. |
+| **Java 11** | `jOOQ 3.14.x`, `3.15.x` | ✅ Full Support | Supports both raw and generic binding protocols. |
+| **Java 17** | `jOOQ 3.14` – `3.19` | ✅ Full Support | jOOQ 3.16+ requires Java 17+ at runtime. |
+| **Java 21+** | `jOOQ 3.14` – `3.20+` | ✅ Full Support | Supports virtual threads (`SpatialWkbPool.clear()`). jOOQ 3.20 requires Java 21+. |
+
+> [!NOTE]
+> **Code generation on jOOQ 3.14–3.19 requires pgjdbc ≤ 42.7.4.** pgjdbc 42.7.5+ reports JDBC-spec-compliant uppercase metadata labels, which jOOQ reads case-sensitively, breaking code generation for every table ([jOOQ #17873](https://github.com/jOOQ/jOOQ/issues/17873) — fixed in jOOQ 3.20.0 only). Runtime usage of this library is unaffected by the driver version. jOOQ 3.20+ codegen works with any pgjdbc, but jOOQ 3.20 ships Java 21 bytecode and therefore requires Java 21.
 
 ## Maven Dependency
 

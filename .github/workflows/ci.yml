@@ -34,6 +34,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Native Java 8 verification leg
+          - java: '8'
+            jooq: 3.14.16
+            extra_flags: ''
           - java: '17'
             jooq: 3.14.16
             extra_flags: ''
