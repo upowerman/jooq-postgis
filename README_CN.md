@@ -33,11 +33,22 @@
 
 ## 环境要求
 
-- Java 8+（以 `--release 8` 编译）
-- jOOQ 3.14+（运行时；jOOQ 3.15+ 上做代码生成需为每个 `<forcedType>` 追加 `<genericBinding>true</genericBinding>`，见下文）
-- **jOOQ 3.14–3.19 上做代码生成需将 pgjdbc 保持在 ≤ 42.7.4。** pgjdbc 42.7.5+ 按 JDBC 规范将元数据列标签改为大写，而 jOOQ 按大小写敏感读取，导致所有表的代码生成失败（[jOOQ #17873](https://github.com/jOOQ/jOOQ/issues/17873)——仅在 jOOQ 3.20.0 修复）。本库的运行时行为不受驱动版本影响；jOOQ 3.20+ 的代码生成对任意 pgjdbc 均可用，但 jOOQ 3.20 的字节码为 Java 21，需在 Java 21 上使用。
-- PostgreSQL 及 PostGIS 扩展（仅支持 PostgreSQL/PostGIS 方言）
-- JTS Core 1.18+
+- **Java**：Java 8、11、17、21+（工件以 `--release 8` 编译，字节码版本 52.0；含 JPMS `Automatic-Module-Name`）
+- **jOOQ**：3.14+（运行时；jOOQ 3.15+ 上做代码生成需为每个 `<forcedType>` 追加 `<genericBinding>true</genericBinding>`，见下文）
+- **数据库**：PostgreSQL 及 PostGIS 扩展（仅支持 PostgreSQL/PostGIS 方言）
+- **JTS**：JTS Core 1.18+
+
+### JDK 与 jOOQ 兼容性矩阵
+
+| JDK 版本 | 适配 jOOQ 版本 | 本库支持情况 | 说明 |
+| :--- | :--- | :---: | :--- |
+| **Java 8** | `jOOQ 3.14.x` | ✅ 完美支持 | jOOQ 3.14 是支持 Java 8 的最后一个开源版本系列。 |
+| **Java 11** | `jOOQ 3.14.x`、`3.15.x` | ✅ 完美支持 | 支持 raw 构造与 `genericBinding` 协议。 |
+| **Java 17** | `jOOQ 3.14` ～ `3.19` | ✅ 完美支持 | jOOQ 官方自 3.16 起运行时基线提升至 Java 17+。 |
+| **Java 21+** | `jOOQ 3.14` ～ `3.20+` | ✅ 完美支持 | 兼容虚拟线程（可配合 `SpatialWkbPool.clear()`）。jOOQ 3.20 自身需 Java 21。 |
+
+> [!NOTE]
+> **jOOQ 3.14–3.19 上做代码生成需将 pgjdbc 保持在 ≤ 42.7.4。** pgjdbc 42.7.5+ 按 JDBC 规范将元数据列标签改为大写，而 jOOQ 按大小写敏感读取，导致所有表的代码生成失败（[jOOQ #17873](https://github.com/jOOQ/jOOQ/issues/17873)——仅在 jOOQ 3.20.0 修复）。本库的运行时行为不受驱动版本影响；jOOQ 3.20+ 的代码生成对任意 pgjdbc 均可用，但 jOOQ 3.20 的字节码为 Java 21，需在 Java 21 上使用。
 
 ## Maven 依赖
 
