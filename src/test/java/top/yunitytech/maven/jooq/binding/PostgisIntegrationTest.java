@@ -992,6 +992,25 @@ class PostgisIntegrationTest {
     }
 
     @Test
+    @DisplayName("Real DB: GeometryCollection M containing an EMPTY Polygon component round-trips")
+    void testGeometryCollectionMWithEmptyPolygonDb() {
+        Polygon empty = gf.createPolygon();
+        Point p = gf.createPoint(new CoordinateXYM(1, 2, 10));
+        GeometryCollection gc = gf.createGeometryCollection(new Geometry[]{empty, p});
+        gc.setSRID(4326);
+
+        dsl.insertInto(TEST_SPATIAL).set(ID, 306L).set(NAME, "GC M empty poly").set(GEOM_ANY, gc).execute();
+
+        Geometry result = dsl.select(GEOM_ANY).from(TEST_SPATIAL).where(ID.eq(306L)).fetchOne(GEOM_ANY);
+        assertThat(result).isInstanceOf(GeometryCollection.class);
+        GeometryCollection rgc = (GeometryCollection) result;
+        assertThat(rgc.getNumGeometries()).isEqualTo(2);
+        assertThat(rgc.getGeometryN(0).isEmpty()).isTrue();
+        assertThat(rgc.getGeometryN(0)).isInstanceOf(Polygon.class);
+        assertThat(rgc.getGeometryN(1).getCoordinate().getM()).isEqualTo(10.0);
+    }
+
+    @Test
     @DisplayName("Real DB: 50,000-vertex LineString round-trips exactly")
     void testLargeLinestringRoundTrip() {
         int vertexCount = 50_000;

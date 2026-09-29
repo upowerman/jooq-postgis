@@ -163,6 +163,30 @@ class PostgisCodegenIntegrationTest {
 
         int exitCode = compiler.run(null, null, null, compilerArgs.toArray(new String[0]));
         assertThat(exitCode).as("Generated code should compile without errors").isEqualTo(0);
+
+        // 8. Verify generated Record getter/setter and converter interaction via reflection
+        try (java.net.URLClassLoader classLoader = new java.net.URLClassLoader(
+                new java.net.URL[]{Paths.get("target/generated-test-classes").toUri().toURL()},
+                getClass().getClassLoader())) {
+            Class<?> recordClass = classLoader.loadClass(TARGET_PACKAGE + ".tables.records.TestSpatialRecord");
+            Object recordInstance = recordClass.getDeclaredConstructor().newInstance();
+
+            org.locationtech.jts.geom.GeometryFactory gf = PostgisCodec.GEOMETRY_FACTORY;
+            org.locationtech.jts.geom.Point point = gf.createPoint(new org.locationtech.jts.geom.Coordinate(10.0, 20.0));
+            point.setSRID(4326);
+
+            java.lang.reflect.Method setGeom = recordClass.getMethod("setGeom", org.locationtech.jts.geom.Geometry.class);
+            setGeom.invoke(recordInstance, point);
+
+            java.lang.reflect.Method getGeom = recordClass.getMethod("getGeom");
+            Object returned = getGeom.invoke(recordInstance);
+
+            assertThat(returned).isInstanceOf(org.locationtech.jts.geom.Geometry.class);
+            org.locationtech.jts.geom.Geometry returnedGeom = (org.locationtech.jts.geom.Geometry) returned;
+            assertThat(returnedGeom.getCoordinate().x).isEqualTo(10.0);
+            assertThat(returnedGeom.getCoordinate().y).isEqualTo(20.0);
+            assertThat(returnedGeom.getSRID()).isEqualTo(4326);
+        }
     }
 
     /**

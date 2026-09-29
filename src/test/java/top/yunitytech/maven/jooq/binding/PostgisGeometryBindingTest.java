@@ -148,6 +148,60 @@ class PostgisGeometryBindingTest {
             assertThat(converter.fromType()).isEqualTo(Object.class);
             assertThat(converter.toType()).isEqualTo(Geometry.class);
         }
+
+        @Test
+        @DisplayName("Generic binding with Object databaseType behaves like raw")
+        void testGenericBindingRawTypes() {
+            PostgisGeometryBinding<Object, Geometry> b = new PostgisGeometryBinding<>(Object.class, Geometry.class);
+            assertThat(b.converter().fromType()).isEqualTo(Object.class);
+            assertThat(b.converter().toType()).isEqualTo(Geometry.class);
+            Point p = gf.createPoint(new Coordinate(1, 2));
+            Object repr = b.converter().to(p);
+            assertThat(repr).isInstanceOf(String.class);
+            Geometry restored = b.converter().from(repr);
+            assertThat(restored).isNotNull();
+        }
+
+        @Test
+        @DisplayName("Generic binding with org.jooq.Geometry converts to and from JTS Geometry without ClassCastException")
+        void testGenericBindingWithJooqGeometry() throws Exception {
+            Class<?> jooqGeomClass;
+            try {
+                jooqGeomClass = Class.forName("org.jooq.Geometry");
+            } catch (ClassNotFoundException e) {
+                return;
+            }
+            @SuppressWarnings({"unchecked", "rawtypes"})
+            PostgisGeometryBinding binding = new PostgisGeometryBinding(jooqGeomClass, Geometry.class);
+            @SuppressWarnings({"unchecked", "rawtypes"})
+            Converter conv = binding.converter();
+            assertThat(conv.fromType()).isEqualTo(jooqGeomClass);
+
+            Point p = gf.createPoint(new Coordinate(1, 2));
+            p.setSRID(4326);
+
+            Object jooqGeom = conv.to(p);
+            assertThat(jooqGeom).isNotNull();
+            assertThat(jooqGeom).isInstanceOf(jooqGeomClass);
+
+            Object restored = conv.from(jooqGeom);
+            assertThat(restored).isInstanceOf(Geometry.class);
+            assertThat(((Geometry) restored).getCoordinate().x).isEqualTo(1.0);
+            assertThat(((Geometry) restored).getCoordinate().y).isEqualTo(2.0);
+            assertThat(((Geometry) restored).getSRID()).isEqualTo(4326);
+        }
+
+        @Test
+        @DisplayName("from(Object) rejects unsupported object types with IllegalArgumentException")
+        void testRejectsUnsupportedObjectTypes() {
+            assertThatThrownBy(() -> PostgisCodec.from(12345))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("Unsupported spatial object type");
+
+            assertThatThrownBy(() -> PostgisCodec.from(new java.util.Date()))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("Unsupported spatial object type");
+        }
     }
 
     @Nested
@@ -529,6 +583,27 @@ class PostgisGeometryBindingTest {
             assertThat(rgc.getGeometryN(0).isEmpty()).isTrue();
             assertThat(rgc.getGeometryN(1).getCoordinate().getM()).isEqualTo(10.0);
             assertThat(Double.isNaN(rgc.getGeometryN(1).getCoordinate().getZ())).isTrue();
+        }
+
+        @Test
+        @DisplayName("GeometryCollection XYM with empty Polygon writes valid EWKB (numRings=0)")
+        void testGeometryCollectionXYMWithEmptyPolygon() {
+            Polygon emptyPoly = gf.createPolygon();
+            Point p = gf.createPoint(new CoordinateXYM(1, 2, 10));
+            GeometryCollection gc = gf.createGeometryCollection(new Geometry[]{p, emptyPoly});
+            gc.setSRID(4326);
+
+            String repr = (String) converter.to(gc);
+            // In EWKB big-endian: polygon type 3 (with M flag 0x40000000 -> 0040000003), followed by numRings = 0 (00000000)
+            assertThat(repr).contains("004000000300000000");
+
+            Geometry restored = converter.from(repr);
+            assertThat(restored).isInstanceOf(GeometryCollection.class);
+            GeometryCollection rgc = (GeometryCollection) restored;
+            assertThat(rgc.getNumGeometries()).isEqualTo(2);
+            assertThat(rgc.getGeometryN(0).isEmpty()).isFalse();
+            assertThat(rgc.getGeometryN(1).isEmpty()).isTrue();
+            assertThat(rgc.getGeometryN(1)).isInstanceOf(Polygon.class);
         }
     }
 
