@@ -390,7 +390,67 @@ class PostgisCodecEdgeCaseTest {
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessageContaining("Unsupported WKB geometry type");
         }
+
+        @Test
+        @DisplayName("Negative ring count in polygon is rejected")
+        void negativeRingCountRejected() {
+            // Little-endian Polygon (01 03000000) with ring count = -1 (FFFFFFFF)
+            byte[] bytes = WKBReader.hexToBytes("0103000000FFFFFFFF");
+            assertThatThrownBy(() -> PostgisCodec.fromWkb(bytes))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("negative ring count");
+        }
+
+        @Test
+        @DisplayName("Negative child count in collection/multi is rejected")
+        void negativeChildCountRejected() {
+            // Little-endian MultiPoint (01 04000000) with child count = -1 (FFFFFFFF)
+            byte[] bytes = WKBReader.hexToBytes("0104000000FFFFFFFF");
+            assertThatThrownBy(() -> PostgisCodec.fromWkb(bytes))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("negative child count");
+        }
+
+        @Test
+        @DisplayName("Negative coordinate count in linestring is rejected")
+        void negativeCoordinateCountRejected() {
+            // Little-endian LineString (01 02000000) with coordinate count = -1 (FFFFFFFF)
+            byte[] bytes = WKBReader.hexToBytes("0102000000FFFFFFFF");
+            assertThatThrownBy(() -> PostgisCodec.fromWkb(bytes))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("negative coordinate count");
+        }
     }
+
+    @Nested
+    @DisplayName("isHex validation tests")
+    class IsHexValidationTests {
+
+        @Test
+        @DisplayName("isHex rejects null, odd lengths, short strings (< 10 hex chars) and invalid prefixes")
+        void testIsHexBoundaries() {
+            assertThat(PostgisCodec.isHex(null)).isFalse();
+            assertThat(PostgisCodec.isHex("")).isFalse();
+            assertThat(PostgisCodec.isHex("00")).isFalse();
+            assertThat(PostgisCodec.isHex("01")).isFalse();
+            assertThat(PostgisCodec.isHex("010100")).isFalse();
+            assertThat(PostgisCodec.isHex("01010000")).isFalse(); // 8 chars (4 bytes)
+            assertThat(PostgisCodec.isHex("010100000")).isFalse(); // 9 chars (odd)
+
+            // Minimum valid length is 10 chars (5 bytes)
+            assertThat(PostgisCodec.isHex("0101000000")).isTrue();
+            assertThat(PostgisCodec.isHex("0020000001")).isTrue();
+
+            // Invalid prefixes (not 00 or 01)
+            assertThat(PostgisCodec.isHex("0201000000")).isFalse();
+            assertThat(PostgisCodec.isHex("FF01000000")).isFalse();
+
+            // Invalid hex chars
+            assertThat(PostgisCodec.isHex("010100000G")).isFalse();
+            assertThat(PostgisCodec.isHex("010100000Z")).isFalse();
+        }
+    }
+
 
     @Nested
     @DisplayName("Per-type dimension round-trips")

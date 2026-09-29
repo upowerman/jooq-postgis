@@ -11,6 +11,7 @@ import top.yunitytech.maven.jooq.binding.internal.SpatialWkbPool;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.regex.Pattern;
 
 /**
  * Dedicated spatial codec for PostgreSQL / PostGIS and JTS {@link Geometry}.
@@ -51,6 +52,9 @@ public final class PostgisCodec {
 
     private static final String MIXED_DIMENSION_ERROR_MESSAGE =
             "Mixed-dimension geometry is not supported: geometry components have inconsistent coordinate dimensions (e.g. XY mixed with XYZ/XYM/XYZM).";
+
+    private static final Pattern WKT_EMPTY_SPACING_PATTERN =
+            Pattern.compile("(?i)(?<=\\b(?:ZM|Z|M))EMPTY\\b");
 
     private static final int MAX_EXCEPTION_SNIPPET_LENGTH = 64;
 
@@ -235,7 +239,7 @@ public final class PostgisCodec {
         if (wkt == null || !wkt.contains("EMPTY")) {
             return wkt;
         }
-        return wkt.replaceAll("(?i)(?<=\\b(?:ZM|Z|M))EMPTY\\b", " EMPTY");
+        return WKT_EMPTY_SPACING_PATTERN.matcher(wkt).replaceAll(" EMPTY");
     }
 
     /**
@@ -250,12 +254,15 @@ public final class PostgisCodec {
 
     /**
      * Checks if a string is a valid hexadecimal EWKB representation.
+     * <p>
+     * A valid EWKB hex string must be at least 10 characters long (5 bytes: 1 byte endian + 4 bytes geometry type),
+     * have even length, start with byte order marker "00" or "01", and contain only valid hexadecimal characters.
      *
      * @param s candidate string
-     * @return true if string is even-length hex starting with 00 or 01
+     * @return true if string is valid hexadecimal EWKB
      */
     public static boolean isHex(String s) {
-        if (s == null || s.length() < 2 || (s.length() % 2 != 0)) {
+        if (s == null || s.length() < 10 || (s.length() % 2 != 0)) {
             return false;
         }
         // PostGIS EWKB always starts with byte order 00 (big-endian) or 01 (little-endian)
@@ -356,6 +363,9 @@ public final class PostgisCodec {
                 case TYPE_POLYGON:
                     registerLeaf(z, m);
                     int ringCount = int32(byteOrder);
+                    if (ringCount < 0) {
+                        throw new IllegalArgumentException(malformed("negative ring count: " + ringCount));
+                    }
                     for (int i = 0; i < ringCount; i++) {
                         skipCoordinateArray(byteOrder, dimension);
                     }
@@ -365,6 +375,9 @@ public final class PostgisCodec {
                 case TYPE_MULTIPOLYGON:
                 case TYPE_GEOMETRYCOLLECTION:
                     int childCount = int32(byteOrder);
+                    if (childCount < 0) {
+                        throw new IllegalArgumentException(malformed("negative child count: " + childCount));
+                    }
                     for (int i = 0; i < childCount; i++) {
                         scanGeometry();
                     }
@@ -385,7 +398,11 @@ public final class PostgisCodec {
         }
 
         private void skipCoordinateArray(int byteOrder, int dimension) {
-            long count = int32(byteOrder) & 0xFFFFFFFFL;
+            int rawCount = int32(byteOrder);
+            if (rawCount < 0) {
+                throw new IllegalArgumentException(malformed("negative coordinate count: " + rawCount));
+            }
+            long count = rawCount;
             expect(count * 8L * dimension);
             pos += (int) (count * 8L * dimension);
         }

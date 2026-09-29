@@ -105,4 +105,22 @@ class SpatialWkbPoolTest {
 
         executor.shutdown();
     }
+
+    @Test
+    @DisplayName("clear() removes thread-local instances and subsequent calls create new ones")
+    void testClearRemovesInstances() {
+        WKBReader reader1 = SpatialWkbPool.getWkbReader();
+        WKBWriter writer1 = SpatialWkbPool.getWkbWriter(2);
+        WKTReader wkt1 = SpatialWkbPool.getWktReader();
+
+        SpatialWkbPool.clear();
+
+        WKBReader reader2 = SpatialWkbPool.getWkbReader();
+        WKBWriter writer2 = SpatialWkbPool.getWkbWriter(2);
+        WKTReader wkt2 = SpatialWkbPool.getWktReader();
+
+        assertThat(reader2).isNotNull().isNotSameAs(reader1);
+        assertThat(writer2).isNotNull().isNotSameAs(writer1);
+        assertThat(wkt2).isNotNull().isNotSameAs(wkt1);
+    }
 }
