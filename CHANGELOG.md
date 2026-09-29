@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.9 (2026-09-29)
+
+Documentation and CI release — **no artifact changes**; the jar is identical to 1.0.8 and existing
+consumers do not need to upgrade.
+
+### Added
+
+- **JDK & jOOQ compatibility matrix** in both READMEs: supported combinations across Java 8 / 11 /
+  17 / 21+ and jOOQ 3.14 – 3.20+ (including the Java 21 requirement of jOOQ 3.20 and the
+  pgjdbc ≤ 42.7.4 constraint for codegen on jOOQ ≤ 3.19).
+- **Native Java 8 CI leg**: the test matrix now verifies the artifact on a real JDK 8
+  (Java 8 / 17 / 21 × jOOQ 3.14.16, Java 17 × 3.19.10, Java 21 × 3.20.20 — all green).
+
 ## 1.0.8 (2026-09-29)
 
 ### Fixed
