@@ -33,6 +33,12 @@ import java.nio.ByteOrder;
  *     <li><b>Writing:</b> all dimensions serialize as big-endian EWKB Hex. M/ZM geometries are
  *     written by a built-in EWKB writer because JTS {@link WKBWriter} cannot emit the M flag
  *     (and JTS {@code WKTWriter} silently drops the M marker when all M values are NaN).</li>
+ *     <li><b>Empty geometries:</b> JTS cannot represent typed empties ("POINT Z EMPTY") — an
+ *     empty geometry carries no dimension information, so empties serialize as 2D and PostgreSQL
+ *     rejects them for Z/M/ZM-typmod columns ("Column has Z dimension but geometry does not").
+ *     When the column type is known, use {@link #toSpatialRepresentation(Geometry,
+ *     DimensionAnalyzer.CoordinateDimension)} to emit a dimensioned empty. Reading is unaffected:
+ *     dimensioned empties written by PostGIS decode to empty JTS geometries.</li>
  * </ul>
  *
  * @author gaoyunfeng
@@ -53,6 +59,8 @@ public final class PostgisCodec {
             "Mixed-dimension geometry is not supported: geometry components have inconsistent coordinate dimensions (e.g. XY mixed with XYZ/XYM/XYZM).";
 
     private static final int MAX_EXCEPTION_SNIPPET_LENGTH = 64;
+
+    private static final int MAX_SRID_TOKEN_LENGTH = 32;
 
     private PostgisCodec() {
         // Private constructor for static utility class
@@ -164,7 +172,16 @@ public final class PostgisCodec {
         if (text.regionMatches(true, 0, "SRID=", 0, 5)) {
             int semicolon = text.indexOf(';');
             if (semicolon > 5) {
-                int srid = Integer.parseInt(text.substring(5, semicolon).trim());
+                String sridToken = text.substring(5, semicolon).trim();
+                int srid;
+                try {
+                    srid = Integer.parseInt(sridToken);
+                } catch (NumberFormatException e) {
+                    String snippet = sridToken.length() <= MAX_SRID_TOKEN_LENGTH
+                            ? sridToken
+                            : sridToken.substring(0, MAX_SRID_TOKEN_LENGTH) + "...";
+                    throw new ParseException("Invalid SRID in EWKT: '" + snippet + "'");
+                }
                 String wkt = fixWktEmptySpacing(text.substring(semicolon + 1).trim());
                 Geometry geom = SpatialWkbPool.getWktReader().read(wkt);
                 geom.setSRID(srid);
@@ -201,6 +218,7 @@ public final class PostgisCodec {
         if (result.isMixed()) {
             DimensionAnalyzer.validateDimensionConsistency(geom);
         }
+        validateSridConsistency(geom);
 
         if (result.hasM()) {
             // JTS WKBWriter cannot emit the M flag, and WKTWriter(4) silently drops the M marker
@@ -211,6 +229,60 @@ public final class PostgisCodec {
         // Standard 2D or 3D (Z) geometry -> EWKB Hex via JTS
         WKBWriter writer = SpatialWkbPool.getWkbWriter(result.getWkbOutputDimension());
         return WKBWriter.toHex(writer.write(geom));
+    }
+
+    /**
+     * Converts a JTS Geometry to its PostgreSQL representation, declaring an explicit coordinate
+     * dimension for EMPTY geometries.
+     * <p>
+     * JTS cannot represent typed empties ("POINT Z EMPTY"): an empty geometry carries no dimension
+     * information, and {@link #toSpatialRepresentation(Geometry)} therefore serializes all empties
+     * as 2D — which PostgreSQL rejects for Z/M/ZM-typmod columns
+     * ("Column has Z dimension but geometry does not"). When the target column type is known,
+     * pass its dimension here to emit a dimensioned empty, e.g.
+     * {@code toSpatialRepresentation(emptyPoint, CoordinateDimension.XYZ)} produces "POINT Z EMPTY".
+     * <p>
+     * For non-empty geometries the dimension is always derived from the coordinate data; the
+     * requested dimension must agree with the data, otherwise an {@link IllegalArgumentException}
+     * is thrown.
+     *
+     * @param geom      the geometry to serialize (may be empty)
+     * @param dimension the coordinate dimension to declare for empty geometries (XY / XYZ / XYM / XYZM)
+     * @return hex EWKB string
+     * @throws IllegalArgumentException if {@code dimension} is {@code null}, EMPTY or MIXED; if a
+     *                                  non-empty geometry's data-derived dimension disagrees with
+     *                                  the requested dimension; or if the geometry has mixed
+     *                                  dimensions or inconsistent component SRIDs
+     */
+    public static String toSpatialRepresentation(Geometry geom, DimensionAnalyzer.CoordinateDimension dimension) {
+        if (dimension == null || dimension == DimensionAnalyzer.CoordinateDimension.EMPTY
+                || dimension == DimensionAnalyzer.CoordinateDimension.MIXED) {
+            throw new IllegalArgumentException(
+                    "dimension must be one of XY, XYZ, XYM, XYZM (an explicit dimension is only meaningful for EMPTY geometries)");
+        }
+        if (geom == null) {
+            return null;
+        }
+        boolean requestedZ = dimension == DimensionAnalyzer.CoordinateDimension.XYZ
+                || dimension == DimensionAnalyzer.CoordinateDimension.XYZM;
+        boolean requestedM = dimension == DimensionAnalyzer.CoordinateDimension.XYM
+                || dimension == DimensionAnalyzer.CoordinateDimension.XYZM;
+        if (geom.isEmpty()) {
+            if (!requestedZ && !requestedM) {
+                return toSpatialRepresentation(geom);
+            }
+            return WKBWriter.toHex(writeEwkb(geom, requestedZ, requestedM));
+        }
+        DimensionAnalyzer.Result actual = DimensionAnalyzer.analyze(geom);
+        if (actual.isMixed()) {
+            DimensionAnalyzer.validateDimensionConsistency(geom);
+        }
+        if (actual.hasZ() != requestedZ || actual.hasM() != requestedM) {
+            throw new IllegalArgumentException(
+                    "Geometry resolves to " + actual.getDimension() + " but " + dimension
+                            + " was requested: for non-empty geometries the explicit dimension must match the coordinate data.");
+        }
+        return toSpatialRepresentation(geom);
     }
 
     /**
@@ -234,6 +306,42 @@ public final class PostgisCodec {
      */
     public static void validateDimensionConsistency(Geometry geom) {
         DimensionAnalyzer.validateDimensionConsistency(geom);
+    }
+
+    /**
+     * Ensures non-empty collection components do not carry a non-zero SRID that differs from the
+     * root geometry. EWKB embeds only the root SRID, so conflicting component SRIDs would be
+     * silently lost on write; PostGIS likewise requires uniform SRIDs within a collection.
+     * Components with SRID 0 are considered "unset" and inherit the root's SRID.
+     *
+     * @param geom geometry to validate (leaf geometries are trivially consistent)
+     * @throws IllegalArgumentException if a non-empty collection component declares a non-zero
+     *                                  SRID different from the root geometry's SRID
+     */
+    private static void validateSridConsistency(Geometry geom) {
+        if (geom instanceof GeometryCollection) {
+            validateCollectionSrids((GeometryCollection) geom, geom.getSRID());
+        }
+    }
+
+    private static void validateCollectionSrids(GeometryCollection collection, int rootSrid) {
+        for (int i = 0; i < collection.getNumGeometries(); i++) {
+            Geometry child = collection.getGeometryN(i);
+            if (child.isEmpty()) {
+                // empty components carry no coordinates; their SRID is irrelevant
+                continue;
+            }
+            int childSrid = child.getSRID();
+            if (childSrid != 0 && childSrid != rootSrid) {
+                throw new IllegalArgumentException(
+                        "Inconsistent SRID in geometry collection: component declares SRID " + childSrid
+                                + " but the root geometry declares SRID " + rootSrid
+                                + ". Only the root SRID is embedded in EWKB; PostGIS requires uniform SRIDs within a collection.");
+            }
+            if (child instanceof GeometryCollection) {
+                validateCollectionSrids((GeometryCollection) child, rootSrid);
+            }
+        }
     }
 
     /**
@@ -308,6 +416,10 @@ public final class PostgisCodec {
         static WkbDimensionProfile scan(byte[] bytes) {
             WkbScanner scanner = new WkbScanner(bytes);
             scanner.scanGeometry();
+            if (scanner.pos != bytes.length) {
+                throw new IllegalArgumentException(malformed(
+                        "trailing bytes after geometry (" + (bytes.length - scanner.pos) + " unexpected)"));
+            }
             return new WkbDimensionProfile(scanner.hasZ, scanner.hasM);
         }
 
@@ -344,6 +456,9 @@ public final class PostgisCodec {
                 case TYPE_POLYGON:
                     registerLeaf(z, m);
                     int ringCount = int32(byteOrder);
+                    if (ringCount < 0) {
+                        throw new IllegalArgumentException(malformed("negative ring count " + ringCount));
+                    }
                     for (int i = 0; i < ringCount; i++) {
                         skipCoordinateArray(byteOrder, dimension);
                     }
@@ -353,6 +468,9 @@ public final class PostgisCodec {
                 case TYPE_MULTIPOLYGON:
                 case TYPE_GEOMETRYCOLLECTION:
                     int childCount = int32(byteOrder);
+                    if (childCount < 0) {
+                        throw new IllegalArgumentException(malformed("negative child count " + childCount));
+                    }
                     for (int i = 0; i < childCount; i++) {
                         scanGeometry();
                     }
@@ -464,6 +582,11 @@ public final class PostgisCodec {
             }
         } else if (geom instanceof Polygon) {
             Polygon polygon = (Polygon) geom;
+            if (polygon.isEmpty()) {
+                // empty polygon has no exterior ring (JTS returns null)
+                buffer.putInt(0);
+                return;
+            }
             buffer.putInt(1 + polygon.getNumInteriorRing());
             writeEwkbRing(polygon.getExteriorRing(), hasZ, hasM, buffer);
             for (int i = 0; i < polygon.getNumInteriorRing(); i++) {
@@ -541,6 +664,9 @@ public final class PostgisCodec {
         }
         if (geom instanceof Polygon) {
             Polygon polygon = (Polygon) geom;
+            if (polygon.isEmpty()) {
+                return self + 4;
+            }
             long total = self + 4;
             total += 4 + polygon.getExteriorRing().getCoordinateSequence().size() * coordinateSize;
             for (int i = 0; i < polygon.getNumInteriorRing(); i++) {

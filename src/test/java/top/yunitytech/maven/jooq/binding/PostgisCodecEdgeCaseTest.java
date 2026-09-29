@@ -390,6 +390,36 @@ class PostgisCodecEdgeCaseTest {
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessageContaining("Unsupported WKB geometry type");
         }
+
+        @Test
+        @DisplayName("Trailing bytes after a complete geometry are rejected")
+        void trailingBytesRejected() {
+            byte[] bytes = WKBReader.hexToBytes("0101000000000000000000F03F0000000000000040");
+            byte[] padded = new byte[bytes.length + 4];
+            System.arraycopy(bytes, 0, padded, 0, bytes.length);
+            padded[bytes.length] = (byte) 0xde;
+            assertThatThrownBy(() -> PostgisCodec.fromWkb(padded))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("trailing bytes");
+        }
+
+        @Test
+        @DisplayName("Negative collection child count is rejected with a clear message")
+        void negativeChildCountRejected() {
+            byte[] bytes = WKBReader.hexToBytes("0107000000ffffffff");
+            assertThatThrownBy(() -> PostgisCodec.fromWkb(bytes))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("negative child count");
+        }
+
+        @Test
+        @DisplayName("Negative polygon ring count is rejected with a clear message")
+        void negativeRingCountRejected() {
+            byte[] bytes = WKBReader.hexToBytes("0103000000ffffffff");
+            assertThatThrownBy(() -> PostgisCodec.fromWkb(bytes))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("negative ring count");
+        }
     }
 
     @Nested
@@ -518,6 +548,155 @@ class PostgisCodecEdgeCaseTest {
             assertThat(back.getCoordinate().x).isEqualTo(0.0);
             assertThat(back.getCoordinates()[49_999].y).isEqualTo(49_999 * 0.002);
             assertThat(back.getSRID()).isEqualTo(4326);
+        }
+    }
+
+    @Nested
+    @DisplayName("Explicit-dimension serialization (typed empties for Z/M/ZM typmod columns)")
+    class ExplicitDimensionWriteTests {
+
+        @Test
+        @DisplayName("Empty point + XYZ serializes a Z-flagged empty that round-trips with SRID")
+        void emptyPointExplicitZ() {
+            Point ep = gf.createPoint();
+            ep.setSRID(4326);
+
+            String repr = PostgisCodec.toSpatialRepresentation(ep, DimensionAnalyzer.CoordinateDimension.XYZ);
+            // big-endian: SRID flag (0x20000000) | Z flag (0x80000000) | POINT, then three NaN doubles
+            assertThat(repr).startsWith("00A0000001000010E6");
+            assertThat(repr).endsWith("7FF80000000000007FF80000000000007FF8000000000000");
+
+            Geometry back = PostgisCodec.from(repr);
+            assertThat(back).isInstanceOf(Point.class);
+            assertThat(back.isEmpty()).isTrue();
+            assertThat(back.getSRID()).isEqualTo(4326);
+        }
+
+        @Test
+        @DisplayName("Empty polygon + XYZM serializes with ZM flags and round-trips (null exterior ring guarded)")
+        void emptyPolygonExplicitZm() {
+            Polygon ep = gf.createPolygon();
+            ep.setSRID(3857);
+
+            String repr = PostgisCodec.toSpatialRepresentation(ep, DimensionAnalyzer.CoordinateDimension.XYZM);
+            // big-endian: SRID | Z | M | POLYGON, zero rings
+            assertThat(repr).startsWith("00E000000300000F1100000000");
+
+            Geometry back = PostgisCodec.from(repr);
+            assertThat(back).isInstanceOf(Polygon.class);
+            assertThat(back.isEmpty()).isTrue();
+            assertThat(back.getSRID()).isEqualTo(3857);
+        }
+
+        @Test
+        @DisplayName("Empty point + XY delegates to the one-arg serialization (2D)")
+        void emptyPointExplicitXyMatchesOneArg() {
+            Point ep = gf.createPoint();
+            ep.setSRID(4326);
+
+            assertThat(PostgisCodec.toSpatialRepresentation(ep, DimensionAnalyzer.CoordinateDimension.XY))
+                    .isEqualTo(PostgisCodec.toSpatialRepresentation(ep));
+        }
+
+        @Test
+        @DisplayName("Non-empty geometry with matching explicit dimension equals the one-arg output")
+        void nonEmptyMatchingDimensionDelegates() {
+            Point p = gf.createPoint(new Coordinate(1, 2, 3));
+            p.setSRID(4326);
+
+            assertThat(PostgisCodec.toSpatialRepresentation(p, DimensionAnalyzer.CoordinateDimension.XYZ))
+                    .isEqualTo(PostgisCodec.toSpatialRepresentation(p));
+        }
+
+        @Test
+        @DisplayName("Non-empty geometry with disagreeing explicit dimension is rejected")
+        void nonEmptyDimensionMismatchRejected() {
+            Point p2d = gf.createPoint(new Coordinate(1, 2));
+            assertThatThrownBy(() -> PostgisCodec.toSpatialRepresentation(p2d, DimensionAnalyzer.CoordinateDimension.XYZ))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("XY");
+
+            LineString xym = gf.createLineString(new CoordinateArraySequence(new CoordinateXYM[]{
+                    new CoordinateXYM(0, 0, 1), new CoordinateXYM(1, 1, 2)}));
+            assertThatThrownBy(() -> PostgisCodec.toSpatialRepresentation(xym, DimensionAnalyzer.CoordinateDimension.XYZ))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("XYM");
+        }
+
+        @Test
+        @DisplayName("EMPTY / MIXED / null dimension requests are rejected")
+        void invalidDimensionRequestsRejected() {
+            Point ep = gf.createPoint();
+            assertThatThrownBy(() -> PostgisCodec.toSpatialRepresentation(ep, DimensionAnalyzer.CoordinateDimension.EMPTY))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("XY, XYZ, XYM, XYZM");
+            assertThatThrownBy(() -> PostgisCodec.toSpatialRepresentation(ep, DimensionAnalyzer.CoordinateDimension.MIXED))
+                    .isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> PostgisCodec.toSpatialRepresentation(ep, (DimensionAnalyzer.CoordinateDimension) null))
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+
+        @Test
+        @DisplayName("Explicit dimension on null geometry returns null")
+        void nullGeometryReturnsNull() {
+            assertThat(PostgisCodec.toSpatialRepresentation(null, DimensionAnalyzer.CoordinateDimension.XYZ)).isNull();
+        }
+    }
+
+    @Nested
+    @DisplayName("Collection SRID consistency on write")
+    class CollectionSridConsistencyTests {
+
+        @Test
+        @DisplayName("Component with non-zero SRID conflicting with the root SRID is rejected")
+        void conflictingChildSridRejected() {
+            Point child3857 = gf.createPoint(new Coordinate(1, 2));
+            child3857.setSRID(3857);
+            GeometryCollection gc = gf.createGeometryCollection(new Geometry[]{child3857});
+            gc.setSRID(4326);
+
+            assertThatThrownBy(() -> PostgisCodec.toSpatialRepresentation(gc))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("Inconsistent SRID");
+        }
+
+        @Test
+        @DisplayName("Non-zero component SRID under an SRID-0 root is rejected (would be silently lost)")
+        void nonZeroChildUnderZeroRootRejected() {
+            Point child4326 = gf.createPoint(new Coordinate(1, 2));
+            child4326.setSRID(4326);
+            GeometryCollection gc = gf.createGeometryCollection(new Geometry[]{child4326});
+            gc.setSRID(0);
+
+            assertThatThrownBy(() -> PostgisCodec.toSpatialRepresentation(gc))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("Inconsistent SRID");
+        }
+
+        @Test
+        @DisplayName("SRID-0 (unset) components inherit the root SRID and are accepted")
+        void zeroSridChildrenAccepted() {
+            Point child = gf.createPoint(new Coordinate(1, 2));
+            GeometryCollection gc = gf.createGeometryCollection(new Geometry[]{child});
+            gc.setSRID(4326);
+
+            String repr = PostgisCodec.toSpatialRepresentation(gc);
+            Geometry back = PostgisCodec.from(repr);
+            assertThat(back.getSRID()).isEqualTo(4326);
+        }
+
+        @Test
+        @DisplayName("Nested conflicting SRID inside an inner collection is rejected")
+        void nestedConflictingSridRejected() {
+            Point child3857 = gf.createPoint(new Coordinate(1, 2));
+            child3857.setSRID(3857);
+            GeometryCollection inner = gf.createGeometryCollection(new Geometry[]{child3857});
+            GeometryCollection outer = gf.createGeometryCollection(new Geometry[]{inner});
+            outer.setSRID(4326);
+
+            assertThatThrownBy(() -> PostgisCodec.toSpatialRepresentation(outer))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("Inconsistent SRID");
         }
     }
 }

@@ -8,7 +8,7 @@
     <artifactId>jooq-postgis</artifactId>
     <version>1.0.6</version>
 
-    <name>JOOQ-PostGis</name>
+    <name>jOOQ-PostGIS</name>
     <description>jOOQ Binding for PostGIS geometry and geography types mapping to JTS Geometry</description>
     <url>https://github.com/upowerman/jooq-postgis</url>
     <packaging>jar</packaging>
@@ -93,6 +93,19 @@
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.2.5</version>
             </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.4.1</version>
+                <configuration>
+                    <archive>
+                        <manifestEntries>
+                            <!-- Stable module name for Java module-path consumers -->
+                            <Automatic-Module-Name>top.yunitytech.maven.jooq.binding</Automatic-Module-Name>
+                        </manifestEntries>
+                    </archive>
+                </configuration>
+            </plugin>
         </plugins>
     </build>
 
@@ -170,8 +183,8 @@
     </licenses>
 
     <scm>
-        <connection>git@github.com:upowerman/jooq-postgis.git</connection>
-        <developerConnection>git@github.com:upowerman/jooq-postgis.git</developerConnection>
+        <connection>scm:git:https://github.com/upowerman/jooq-postgis.git</connection>
+        <developerConnection>scm:git:git@github.com:upowerman/jooq-postgis.git</developerConnection>
         <url>https://github.com/upowerman/jooq-postgis</url>
     </scm>
 

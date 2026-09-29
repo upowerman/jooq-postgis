@@ -207,6 +207,25 @@ class PostgisCodecTest {
     }
 
     @Test
+    @DisplayName("Codec: Non-numeric SRID in EWKT fails with ParseException, not NumberFormatException")
+    void testInvalidSridThrowsParseException() {
+        assertThatThrownBy(() -> PostgisCodec.fromWkt("SRID=abc;POINT(1 2)"))
+                .isInstanceOf(ParseException.class)
+                .hasMessageContaining("Invalid SRID")
+                .hasMessageContaining("abc");
+
+        assertThatThrownBy(() -> PostgisCodec.fromWkt("SRID=99999999999999999;POINT(1 2)"))
+                .isInstanceOf(ParseException.class)
+                .hasMessageContaining("Invalid SRID");
+
+        // via the converter entry point the ParseException is wrapped with input context
+        assertThatThrownBy(() -> PostgisCodec.from("SRID=abc;POINT(1 2)"))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("Invalid SRID")
+                .hasCauseInstanceOf(ParseException.class);
+    }
+
+    @Test
     @DisplayName("Codec: Malformed input throws expected exception")
     void testMalformedInput() {
         assertThatThrownBy(() -> PostgisCodec.from("NOT_A_GEOMETRY"))
