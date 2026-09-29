@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **EMPTY geometries into Z/M/ZM-typmod columns: documented the server rejection and added an
+  explicit-dimension workaround.** JTS cannot represent typed empties, so empties serialize as 2D
+  and PostgreSQL rejects them for dimension-typmod columns (`Column has Z dimension but geometry
+  does not`). New overload
+  `PostgisCodec.toSpatialRepresentation(Geometry, DimensionAnalyzer.CoordinateDimension)` emits a
+  dimensioned empty (e.g. "POINT Z EMPTY") when the column type is known; for non-empty geometries
+  the requested dimension must match the data. Reading was already unaffected.
+- **EWKT with a non-numeric SRID (`SRID=abc;...`) now fails with a contextual `ParseException`**
+  instead of leaking a raw `NumberFormatException`.
+- **WKB parsing is strict about stream length and counts.** Trailing bytes after a complete
+  geometry and negative ring/child counts are rejected by the `WkbScanner` with clear
+  `Malformed WKB/EWKB input` messages instead of being silently ignored or delegated to JTS with
+  cryptic errors.
+- **Collections with conflicting non-zero component SRIDs are rejected on write.** EWKB embeds
+  only the root SRID, so a non-empty component declaring a different non-zero SRID would
+  previously be silently lost; it now throws `IllegalArgumentException` (SRID-0 components are
+  "unset" and inherit the root's SRID, as before). Empty components are exempt.
+- Guarded the built-in EWKB writer against empty `Polygon`s (null exterior ring) when writing
+  dimensioned empties.
+
+### Added
+
+- Packaging metadata: `Automatic-Module-Name: top.yunitytech.maven.jooq.binding` manifest entry
+  for stable module-path usage; standard `scm:git:` connection URLs; project name spelling
+  ("jOOQ-PostGIS").
+
 ## 1.0.6 (2026-09-28)
 
 ### Fixed
