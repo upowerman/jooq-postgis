@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.0.8 (2026-09-29)
+
+### Fixed
+
+- **EWKB serialization of empty `Polygon` components in collections:**
+  Empty polygons now serialize with `numRings = 0` (`004000000300000000`) instead of attempting to access a null exterior ring, preventing `ERROR: Polygon must have at least four points in each ring` in PostgreSQL/PostGIS.
+- **jOOQ 3.15+ genericBinding contract support:**
+  Preserve `databaseType` from jOOQ codegen in `AbstractPostgisBinding` and dynamic generic `SpatialConverter<T>`. When columns map to `org.jooq.Geometry` / `org.jooq.Geography`, values convert without `ClassCastException` in generated Record getters and setters.
+- **Strict input validation:**
+  Explicitly resolve `org.jooq.Spatial` objects via reflection; unknown non-null objects passed to `PostgisCodec.from` throw `IllegalArgumentException` instead of silently returning `null`.
+- **WkbScanner signed integer overflow defense:**
+  Explicitly reject negative coordinate counts in linestrings, negative ring counts in polygons, and negative child counts in collections with descriptive `Malformed WKB/EWKB input` errors.
+- **Hex EWKB boundary detection:**
+  `isHex` requires a minimum length of 10 characters (5 bytes: byte order + geometry type), preventing short strings like `"00"` or `"01"` from false-positive detection.
+
+### Added
+
+- **ThreadLocal cleanup API:**
+  Added `SpatialWkbPool.clear()` to allow explicitly removing thread-local `WKBReader`, `WKBWriter`, and `WKTReader` instances in managed environments (servlet redeployment, virtual threads, or thread pools).
+
+### Performance
+
+- **Pre-compiled regex pattern:**
+  `fixWktEmptySpacing` now uses a static pre-compiled `WKT_EMPTY_SPACING_PATTERN` instead of recompiling regex on every invocation.
+
 ## 1.0.7 (2026-09-29)
 
 ### Fixed

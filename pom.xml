@@ -20,7 +20,7 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <jooq.version>3.14.16</jooq.version>
-        <postgresql.version>42.7.13</postgresql.version>
+        <postgresql.version>42.7.4</postgresql.version>
         <jts.version>1.18.2</jts.version>
         <junit-jupiter.version>5.10.2</junit-jupiter.version>
         <assertj.version>3.27.7</assertj.version>
