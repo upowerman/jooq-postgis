@@ -45,11 +45,13 @@ public class PostgisGeographyBinding<T, U> extends AbstractPostgisBinding<T, U> 
 
     @Override
     public boolean equals(Object o) {
-        return o instanceof PostgisGeographyBinding;
+        if (this == o) return true;
+        if (!(o instanceof PostgisGeographyBinding)) return false;
+        return super.equals(o);
     }
 
     @Override
     public int hashCode() {
-        return PostgisGeographyBinding.class.hashCode();
+        return super.hashCode();
     }
 }

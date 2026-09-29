@@ -85,13 +85,25 @@ public final class PostgisCodec {
             if (databaseObject instanceof PGobject) {
                 PGobject pgObj = (PGobject) databaseObject;
                 text = pgObj.getValue();
+                if (text == null || text.trim().isEmpty()) {
+                    return null;
+                }
             } else if (databaseObject instanceof String) {
                 text = (String) databaseObject;
+                if (text.trim().isEmpty()) {
+                    return null;
+                }
+            } else if (isJooqSpatial(databaseObject)) {
+                text = extractJooqSpatialData(databaseObject);
+                if (text == null || text.trim().isEmpty()) {
+                    return null;
+                }
+            } else {
+                throw new IllegalArgumentException(
+                        "Unsupported spatial object type: " + databaseObject.getClass().getName()
+                                + " (" + describe(databaseObject) + ")");
             }
 
-            if (text == null || text.trim().isEmpty()) {
-                return null;
-            }
             text = text.trim();
 
             // 1. Detect Hex EWKB/WKB format (e.g. 01010000... or 00000000...)
@@ -464,10 +476,14 @@ public final class PostgisCodec {
             }
         } else if (geom instanceof Polygon) {
             Polygon polygon = (Polygon) geom;
-            buffer.putInt(1 + polygon.getNumInteriorRing());
-            writeEwkbRing(polygon.getExteriorRing(), hasZ, hasM, buffer);
-            for (int i = 0; i < polygon.getNumInteriorRing(); i++) {
-                writeEwkbRing(polygon.getInteriorRingN(i), hasZ, hasM, buffer);
+            if (polygon.isEmpty()) {
+                buffer.putInt(0);
+            } else {
+                buffer.putInt(1 + polygon.getNumInteriorRing());
+                writeEwkbRing(polygon.getExteriorRing(), hasZ, hasM, buffer);
+                for (int i = 0; i < polygon.getNumInteriorRing(); i++) {
+                    writeEwkbRing(polygon.getInteriorRingN(i), hasZ, hasM, buffer);
+                }
             }
         } else if (geom instanceof MultiPoint) {
             writeEwkbChildren(((MultiPoint) geom), hasZ, hasM, buffer);
@@ -541,6 +557,9 @@ public final class PostgisCodec {
         }
         if (geom instanceof Polygon) {
             Polygon polygon = (Polygon) geom;
+            if (polygon.isEmpty()) {
+                return self + 4;
+            }
             long total = self + 4;
             total += 4 + polygon.getExteriorRing().getCoordinateSequence().size() * coordinateSize;
             for (int i = 0; i < polygon.getNumInteriorRing(); i++) {
@@ -669,5 +688,35 @@ public final class PostgisCodec {
         return text.length() <= MAX_EXCEPTION_SNIPPET_LENGTH
                 ? text
                 : text.substring(0, MAX_EXCEPTION_SNIPPET_LENGTH) + "...(" + text.length() + " chars)";
+    }
+
+    private static boolean isJooqSpatial(Object obj) {
+        if (obj == null) {
+            return false;
+        }
+        Class<?> clazz = obj.getClass();
+        while (clazz != null && clazz != Object.class) {
+            String name = clazz.getName();
+            if ("org.jooq.Geometry".equals(name) || "org.jooq.Geography".equals(name)) {
+                return true;
+            }
+            for (Class<?> iface : clazz.getInterfaces()) {
+                if ("org.jooq.Spatial".equals(iface.getName())) {
+                    return true;
+                }
+            }
+            clazz = clazz.getSuperclass();
+        }
+        return false;
+    }
+
+    private static String extractJooqSpatialData(Object obj) {
+        try {
+            java.lang.reflect.Method m = obj.getClass().getMethod("data");
+            Object result = m.invoke(obj);
+            return result != null ? result.toString() : null;
+        } catch (ReflectiveOperationException e) {
+            return obj.toString();
+        }
     }
 }

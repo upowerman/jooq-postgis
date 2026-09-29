@@ -45,11 +45,13 @@ public class PostgisGeometryBinding<T, U> extends AbstractPostgisBinding<T, U> {
 
     @Override
     public boolean equals(Object o) {
-        return o instanceof PostgisGeometryBinding;
+        if (this == o) return true;
+        if (!(o instanceof PostgisGeometryBinding)) return false;
+        return super.equals(o);
     }
 
     @Override
     public int hashCode() {
-        return PostgisGeometryBinding.class.hashCode();
+        return super.hashCode();
     }
 }
