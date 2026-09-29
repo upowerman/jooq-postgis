@@ -46,7 +46,7 @@
 <dependency>
     <groupId>top.yunitytech.maven</groupId>
     <artifactId>jooq-postgis</artifactId>
-    <version>1.0.6</version>
+    <version>1.0.7</version>
 </dependency>
 ```
 
@@ -72,7 +72,7 @@
         <dependency>
             <groupId>top.yunitytech.maven</groupId>
             <artifactId>jooq-postgis</artifactId>
-            <version>1.0.6</version>
+            <version>1.0.7</version>
         </dependency>
     </dependencies>
     <configuration>
@@ -179,7 +179,12 @@ String repr = PostgisCodec.toSpatialRepresentation(geom);
 - **类型化 JTS 序列优先。** 以 `CoordinateXYM` / `CoordinateXYZM`（或带 measures 的 packed 序列）构建的几何，即使 M 值全为 NaN 也保留其声明维度；普通 `Coordinate` 序列按坐标值判定。
 - **集合维度强约束。** `GEOMETRYCOLLECTION(POINT(1 2), POINT Z(3 4 5))` 会抛出 `IllegalArgumentException` 拒绝，与 PostGIS 行为一致（`Dimensions mismatch in lwcollection`）。
 - **外来（非 PostGIS）WKB 按叶子标志解码。** 部分 ISO WKB 写出器在集合头部少写维度标志。`fromWkb` 对每个叶子几何的 Z/M 标志建档（JTS 本身按各元素自身标志解析），因此 2D 集合头下的 `POINT M` 子元素会正确解码为 XYM，而不会把 M 静默误读为 Z。同一字节流中叶子标志必须一致。
-- **EMPTY 几何**以 2D EWKB 序列化；空几何上的维度标记不保留。
+- **EMPTY 几何以 2D EWKB 序列化；写入 Z/M/ZM typmod 列会被服务端拒绝。** JTS 无法表达"POINT Z EMPTY"这类带维度的空几何——空几何不携带维度信息，因此一律按 2D 序列化，PostgreSQL 将报 `Column has Z dimension but geometry does not`。读取不受影响：PostGIS 写入的带维度空几何可正常解码为空 JTS 几何。若已知目标列类型，可显式声明维度：
+  ```java
+  String hex = PostgisCodec.toSpatialRepresentation(emptyPoint, DimensionAnalyzer.CoordinateDimension.XYZ); // "POINT Z EMPTY"
+  ```
+- **仅支持简单 OGC 几何类型。** Point / LineString / Polygon / Multi* / GeometryCollection（WKB 类型 1–7）映射为 JTS 类型。曲线/曲面类型（`CIRCULARSTRING`、`COMPOUNDCURVE`、`CURVEPOLYGON`、`TRIANGLE`、`POLYHEDRALSURFACE` 等）JTS 无法表示，读取时抛异常——此类列在 codegen 后仍声明为 `Geometry`，凡取到含此类值的行都会抛错。请在 codegen 中按名称排除相关表/列（`<excludes>`）。
+- **集合不允许混合非零 SRID。** EWKB 只内嵌根几何的 SRID；若非空子元素声明了不同的非零 SRID，将抛出 `IllegalArgumentException` 拒绝（而非静默丢弃）。SRID 为 0（未设置）的子元素继承根几何的 SRID。
 - **typmod 与 SRID 由 PostgreSQL 强制。** `geometry(Point,4326)` 约束与 SRID 不匹配由服务端拒绝——用户构建的几何请务必调用 `setSRID()`。Binding 本身只负责传输。
 - **仅支持 PostgreSQL / PostGIS。** 无论配置何种 SQL 方言都会渲染 `?::geometry` / `?::geography` 强转，不支持其他数据库。
 - **更严格的 codegen 匹配（可选）。** 若库中存在名称含 `geometry`/`geography` 的自定义类型，可使用锚定正则（如 `(?i:^geometry$)`）。

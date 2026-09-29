@@ -4,12 +4,14 @@ import org.jooq.DSLContext;
 import org.jooq.Field;
 import org.jooq.SQLDialect;
 import org.jooq.Table;
+import org.jooq.exception.DataAccessException;
 import org.jooq.impl.DSL;
 import org.jooq.impl.SQLDataType;
 import org.junit.jupiter.api.*;
 import org.locationtech.jts.geom.*;
 import org.locationtech.jts.geom.impl.CoordinateArraySequence;
 import org.locationtech.jts.io.WKTReader;
+import top.yunitytech.maven.jooq.binding.internal.DimensionAnalyzer;
 
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -999,15 +1001,43 @@ class PostgisIntegrationTest {
         GeometryCollection gc = gf.createGeometryCollection(new Geometry[]{empty, p});
         gc.setSRID(4326);
 
-        dsl.insertInto(TEST_SPATIAL).set(ID, 306L).set(NAME, "GC M empty poly").set(GEOM_ANY, gc).execute();
+        dsl.insertInto(TEST_SPATIAL).set(ID, 307L).set(NAME, "GC M empty poly").set(GEOM_ANY, gc).execute();
 
-        Geometry result = dsl.select(GEOM_ANY).from(TEST_SPATIAL).where(ID.eq(306L)).fetchOne(GEOM_ANY);
+        Geometry result = dsl.select(GEOM_ANY).from(TEST_SPATIAL).where(ID.eq(307L)).fetchOne(GEOM_ANY);
         assertThat(result).isInstanceOf(GeometryCollection.class);
         GeometryCollection rgc = (GeometryCollection) result;
         assertThat(rgc.getNumGeometries()).isEqualTo(2);
         assertThat(rgc.getGeometryN(0).isEmpty()).isTrue();
         assertThat(rgc.getGeometryN(0)).isInstanceOf(Polygon.class);
         assertThat(rgc.getGeometryN(1).getCoordinate().getM()).isEqualTo(10.0);
+    }
+
+    @Test
+    @DisplayName("Real DB: JTS EMPTY into a Z-typmod column is rejected; explicit-dimension empty succeeds")
+    void testEmptyGeometryIntoDimensionedTypmodColumn() {
+        // JTS cannot represent "POINT Z EMPTY": an empty geometry serializes as 2D and
+        // PostgreSQL rejects it for a GEOMETRY(GeometryZ) column.
+        Point empty = gf.createPoint();
+        empty.setSRID(3857);
+        assertThatThrownBy(() ->
+                dsl.insertInto(TEST_SPATIAL).set(ID, 306L).set(NAME, "Empty into typmod").set(GEOM_3D, empty).execute()
+        ).isInstanceOf(DataAccessException.class);
+
+        // Workaround when the column type is known: declare the dimension explicitly.
+        // The hex literal only ever contains [0-9a-f], so inline concatenation is injection-safe.
+        String hex = PostgisCodec.toSpatialRepresentation(empty, DimensionAnalyzer.CoordinateDimension.XYZ);
+        assertThat(hex).startsWith("00A0");
+        dsl.execute("INSERT INTO test_spatial (id, name, geom_3d) VALUES (306, 'Explicit-dim empty', '" + hex + "'::geometry)");
+
+        Geometry back = dsl.select(GEOM_3D).from(TEST_SPATIAL).where(ID.eq(306L)).fetchOne(GEOM_3D);
+        assertThat(back).isNotNull();
+        assertThat(back.isEmpty()).isTrue();
+        assertThat(back.getSRID()).isEqualTo(3857);
+
+        Integer ndims = dsl.select(DSL.field("ST_NDims(geom_3d)", Integer.class))
+                .from(TEST_SPATIAL).where(ID.eq(306L))
+                .fetchOne(0, Integer.class);
+        assertThat(ndims).isEqualTo(3);
     }
 
     @Test
