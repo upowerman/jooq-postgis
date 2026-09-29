@@ -77,4 +77,18 @@ public final class SpatialWkbPool {
     public static WKTReader getWktReader() {
         return WKT_READER.get();
     }
+
+    /**
+     * Clears all thread-local readers and writers for the current thread.
+     * <p>
+     * Calling this method helps avoid memory or classloader leaks in managed environments
+     * (e.g. web servers, thread pools, or virtual threads) upon thread completion or redeployment.
+     */
+    public static void clear() {
+        WKB_READER.remove();
+        PACKED_WKB_READER.remove();
+        WKB_WRITER_2D.remove();
+        WKB_WRITER_3D.remove();
+        WKT_READER.remove();
+    }
 }
