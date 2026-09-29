@@ -46,7 +46,7 @@
 <dependency>
     <groupId>top.yunitytech.maven</groupId>
     <artifactId>jooq-postgis</artifactId>
-    <version>1.0.7</version>
+    <version>1.0.8</version>
 </dependency>
 ```
 
@@ -72,7 +72,7 @@
         <dependency>
             <groupId>top.yunitytech.maven</groupId>
             <artifactId>jooq-postgis</artifactId>
-            <version>1.0.7</version>
+            <version>1.0.8</version>
         </dependency>
     </dependencies>
     <configuration>
