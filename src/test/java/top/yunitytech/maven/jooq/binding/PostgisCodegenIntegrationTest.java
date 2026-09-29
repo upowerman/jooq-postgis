@@ -33,12 +33,18 @@ class PostgisCodegenIntegrationTest {
     @Test
     @DisplayName("Codegen Verification: jOOQ code generator generates valid Geometry fields with PostGIS bindings")
     void testJooqCodegenWithPostgisBindings() throws Exception {
-        // 1. Verify DB connection and table schema
+        // 1. Verify DB connection and table schema.
+        // A dedicated key-less table isolates codegen from primary-key introspection:
+        // jOOQ 3.14's codegen looks up "key_seq" case-sensitively in the key metadata
+        // result, which pgjdbc 42.7.5+ reports with uppercase ("KEY_SEQ") labels —
+        // any table WITH a key fails to generate on that combination (jOOQ 3.15+ is
+        // unaffected). The binding wiring under test does not depend on keys.
         try (Connection conn = DriverManager.getConnection(JDBC_URL, JDBC_USER, JDBC_PASS);
              Statement stmt = conn.createStatement()) {
             stmt.execute("CREATE EXTENSION IF NOT EXISTS postgis");
-            stmt.execute("CREATE TABLE IF NOT EXISTS test_spatial (" +
-                    "  id BIGSERIAL PRIMARY KEY," +
+            stmt.execute("DROP TABLE IF EXISTS test_spatial_codegen");
+            stmt.execute("CREATE TABLE test_spatial_codegen (" +
+                    "  id BIGINT," +
                     "  name VARCHAR(100)," +
                     "  geom GEOMETRY(Geometry, 4326)," +
                     "  geog GEOGRAPHY(Point, 4326)," +
@@ -86,7 +92,7 @@ class PostgisCodegenIntegrationTest {
                         .withDatabase(new Database()
                                 .withName("org.jooq.meta.postgres.PostgresDatabase")
                                 .withInputSchema("public")
-                                .withIncludes("test_spatial")
+                                .withIncludes("test_spatial_codegen")
                                 .withForcedTypes(geometryForcedType, geographyForcedType))
                         .withTarget(new Target()
                                 .withPackageName(TARGET_PACKAGE)
@@ -96,8 +102,8 @@ class PostgisCodegenIntegrationTest {
         GenerationTool.generate(config);
 
         // 4. Verify generated source files exist
-        Path tableFilePath = Paths.get(TARGET_DIR, "top/yunitytech/maven/jooq/generated/tables/TestSpatial.java");
-        Path recordFilePath = Paths.get(TARGET_DIR, "top/yunitytech/maven/jooq/generated/tables/records/TestSpatialRecord.java");
+        Path tableFilePath = Paths.get(TARGET_DIR, "top/yunitytech/maven/jooq/generated/tables/TestSpatialCodegen.java");
+        Path recordFilePath = Paths.get(TARGET_DIR, "top/yunitytech/maven/jooq/generated/tables/records/TestSpatialCodegenRecord.java");
 
         assertThat(tableFilePath).exists();
         assertThat(recordFilePath).exists();
@@ -110,12 +116,12 @@ class PostgisCodegenIntegrationTest {
                 .contains("PostgisGeometryBinding")
                 .contains("PostgisGeographyBinding");
         assertThat(containsAny(tableSource,
-                "TableField<TestSpatialRecord, Geometry> GEOM",
-                "TableField<TestSpatialRecord, org.locationtech.jts.geom.Geometry> GEOM"))
+                "TableField<TestSpatialCodegenRecord, Geometry> GEOM",
+                "TableField<TestSpatialCodegenRecord, org.locationtech.jts.geom.Geometry> GEOM"))
                 .as("GEOM field declared with JTS Geometry type").isTrue();
         assertThat(containsAny(tableSource,
-                "TableField<TestSpatialRecord, Geometry> GEOG",
-                "TableField<TestSpatialRecord, org.locationtech.jts.geom.Geometry> GEOG"))
+                "TableField<TestSpatialCodegenRecord, Geometry> GEOG",
+                "TableField<TestSpatialCodegenRecord, org.locationtech.jts.geom.Geometry> GEOG"))
                 .as("GEOG field declared with JTS Geometry type").isTrue();
 
         // 6. Verify contents of the generated Record class
@@ -168,7 +174,7 @@ class PostgisCodegenIntegrationTest {
         try (java.net.URLClassLoader classLoader = new java.net.URLClassLoader(
                 new java.net.URL[]{Paths.get("target/generated-test-classes").toUri().toURL()},
                 getClass().getClassLoader())) {
-            Class<?> recordClass = classLoader.loadClass(TARGET_PACKAGE + ".tables.records.TestSpatialRecord");
+            Class<?> recordClass = classLoader.loadClass(TARGET_PACKAGE + ".tables.records.TestSpatialCodegenRecord");
             Object recordInstance = recordClass.getDeclaredConstructor().newInstance();
 
             org.locationtech.jts.geom.GeometryFactory gf = PostgisCodec.GEOMETRY_FACTORY;
