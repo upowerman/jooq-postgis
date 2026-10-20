@@ -39,12 +39,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # corretto-8 对齐 mise.toml，产物保持 Java 8 字节码
-      - name: Set up JDK 8
+      # 用 JDK 17 构建：pom 里 maven.compiler.release=8 保证产物仍是 Java 8 字节码，
+      # 而 JDK 8 的 javadoc 不支持 --release（插件会把 release=8 转成 --release 8），
+      # 用 JDK 8 会在 maven-javadoc-plugin 阶段直接失败。
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
-          distribution: corretto
-          java-version: '8'
+          distribution: temurin
+          java-version: '17'
           cache: maven
 
       # 防呆：tag 和 pom 版本不一致时直接失败
