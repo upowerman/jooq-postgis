@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.0.10 (2026-10-20)
+
+CI release — **no artifact changes**; the jar is identical to 1.0.9 and existing consumers do not
+need to upgrade.
+
+### Added
+
+- **Automated Maven Central publishing via GitHub Actions**: pushing a `1.0.x` tag now builds,
+  signs, and publishes to the Central Portal automatically. A manual `workflow_dispatch` run
+  without `publish` performs a sign-only dry run.
+
+### Changed
+
+- `central-publishing-maven-plugin` 0.7.0 → 0.11.0, with `waitUntil=VALIDATED` so the job returns
+  as soon as the bundle passes validation instead of waiting for full publication.
+- `maven-gpg-plugin` 3.0.1 → 3.1.0.
+- Release builds run on JDK 17. JDK 8's `javadoc` rejects `--release`, which the javadoc plugin
+  derives from `maven.compiler.release=8`; the published artifact remains Java 8 bytecode.
+
 ## 1.0.9 (2026-09-29)
 
 Documentation and CI release — **no artifact changes**; the jar is identical to 1.0.8 and existing
