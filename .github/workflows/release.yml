@@ -49,6 +49,11 @@ jobs:
           java-version: '17'
           cache: maven
 
+      - name: Toolchain versions
+        run: |
+          java -version
+          mvn -v
+
       # 防呆：tag 和 pom 版本不一致时直接失败
       - name: Verify tag matches pom version
         if: startsWith(github.ref, 'refs/tags/')
