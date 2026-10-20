@@ -1,19 +1,40 @@
 # 发布到 Maven Central（Sonatype Central Portal）
 #
-# 触发：推送形如 1.0.10 的 tag（与仓库既有 tag 风格一致，无 v 前缀）
+# 触发（双通道，任一即可）：
+#   1. 推送形如 1.0.10 的 tag（与仓库既有 tag 风格一致，无 v 前缀）
+#      注意：该 glob 也会匹配 1.0.11-rc1 之类的预发布 tag 并自动发布；
+#      目前 tag 风格为纯 X.Y.Z，将来若需要 RC tag 不自动发布请收紧模式
+#   2. 发布 GitHub Release（release published 事件）——兜底通道：
+#      gh/API 隐式创建的 tag 不触发 on: push（2026-10-20 实测，1.0.10 的
+#      tag 未产生任何运行），但 Release published 事件必然触发。此路径下
+#      GitHub Release 已存在，末尾的创建步骤幂等跳过。工作流自己用
+#      GITHUB_TOKEN 建的 Release 不会再次触发工作流（防递归），无双重运行
 # 手动：Actions 页面 Run workflow，不勾 publish 则只做「打包 + 签名」干跑，不上传
+#
+# ── 发布 runbook（重要）─────────────────────────────────────────────
+#   1. 升版本 + 补 CHANGELOG，提交并推 main
+#   2. git push origin <版本号>（推荐：Central 发布成功后才自动建 GitHub
+#      Release，对外顺序最干净。gh release create <版本号> 也能触发，但
+#      Release 会先于 Central 挂出）
+#   3. 确认 Actions 出现 Release 运行且绿色：集成测试 → Central 发布 →
+#      GitHub Release 自动创建，全程无需手动
+#   4. 若因故没触发：Actions → Release → Run workflow 勾选 publish 手动
+#      救场（要求远端已存在与 pom 版本一致的 tag）
 #
 # 仓库 Secrets 需要配置 4 个：
 #   CENTRAL_USERNAME   Central Portal 用户名
 #   CENTRAL_TOKEN      Central Portal 用户令牌（不是登录密码）
 #   GPG_PRIVATE_KEY    私钥全文（ASCII armor）
 #   GPG_PASSPHRASE     私钥密码短语
+# GitHub Release 用内置 GITHUB_TOKEN 创建，无需额外配置
 name: Release
 
 on:
   push:
     tags:
       - '[0-9]*.[0-9]*.[0-9]*'
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       publish:
@@ -21,8 +42,9 @@ on:
         type: boolean
         default: false
 
+# contents: write 仅为发布成功后自动创建 GitHub Release 所需
 permissions:
-  contents: read
+  contents: write
 
 # 发布串行化：两个 tag 并发会撞 Central 的版本占用，直接失败
 concurrency:
@@ -34,6 +56,29 @@ jobs:
     name: Build & publish
     runs-on: ubuntu-latest
     timeout-minutes: 30
+
+    # 与 CI 相同的 PostGIS 服务容器：发布构建必须真实跑过数据库集成测试。
+    # 若不配容器，TestDatabase 会在连不上库时静默跳过集成测试
+    # （2026-10-20 之前的发布构建里 PostgisIntegrationTest 为 0 个用例）
+    services:
+      postgis:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_DB: test_db
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d test_db"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      TEST_DB_URL: jdbc:postgresql://localhost:5432/test_db
+      TEST_DB_USER: postgres
+      TEST_DB_PASSWORD: postgres
 
     steps:
       - name: Checkout
@@ -49,27 +94,68 @@ jobs:
           java-version: '17'
           cache: maven
 
+      # 固定 Maven 3.9.16（不用 wrapper 模式）：runner 自带的 3.10.0 在向
+      # central-staging install 时会写入 _remote.repositories 与
+      # maven-metadata-local.xml（落在无版本号的 artifact 级目录），导致
+      # Central 校验报 "Bundle has content that does NOT have a .pom file"
+      # 而发布失败；Maven 3.9.x 不产生这些文件。升级前务必用 dry-run 验证。
+      - name: Set up Maven 3.9.16
+        run: |
+          set -euo pipefail
+          f=apache-maven-3.9.16-bin.tar.gz
+          base=https://archive.apache.org/dist/maven/maven-3/3.9.16/binaries
+          curl -fsSL -o "/tmp/$f" "$base/$f"
+          # 该 .sha512 文件只含 hash 值不带文件名，sha512sum -c 不可用，手动比对
+          expected=$(curl -fsSL "$base/$f.sha512" | tr -d '[:space:]')
+          actual=$(sha512sum "/tmp/$f" | cut -d' ' -f1)
+          if [ "$expected" != "$actual" ]; then
+            echo "::error::sha512 校验失败：expected=$expected actual=$actual"
+            exit 1
+          fi
+          mkdir -p "$HOME/tools"
+          tar -xzf "/tmp/$f" -C "$HOME/tools"
+          echo "$HOME/tools/apache-maven-3.9.16/bin" >> "$GITHUB_PATH"
+
       - name: Toolchain versions
         run: |
           java -version
-          ./mvnw -v
+          mvn -v
 
-      # 防呆：tag 和 pom 版本不一致时直接失败
-      - name: Verify tag matches pom version
-        if: startsWith(github.ref, 'refs/tags/')
+      # 防呆：
+      #   tag push / Release published → GITHUB_REF 均为 refs/tags/<tag>，
+      #                        tag 必须与 pom 版本一致
+      #   dispatch + publish → 远端必须已存在与 pom 版本一致的 tag（救场通道，
+      #                        防止把从未打 tag 的版本直接发出去）
+      #   dispatch 干跑     → 不检查
+      - name: Verify version/tag consistency
+        env:
+          PUBLISH: ${{ inputs.publish }}
         run: |
           python3 - <<'PY'
           import os
+          import subprocess
           import xml.etree.ElementTree as ET
 
           ns = {'m': 'http://maven.apache.org/POM/4.0.0'}
           pom_version = ET.parse('pom.xml').getroot().findtext('m:version', namespaces=ns)
-          tag = os.environ['GITHUB_REF'].replace('refs/tags/', '', 1)
-
+          ref = os.environ['GITHUB_REF']
           print('pom version = %s' % pom_version)
-          print('git tag     = %s' % tag)
-          if tag != pom_version:
-              raise SystemExit('::error::tag %s 与 pom 版本 %s 不一致，拒绝发布' % (tag, pom_version))
+
+          if ref.startswith('refs/tags/'):
+              tag = ref[len('refs/tags/'):]
+              print('git tag     = %s' % tag)
+              if tag != pom_version:
+                  raise SystemExit('::error::tag %s 与 pom 版本 %s 不一致，拒绝发布' % (tag, pom_version))
+          elif os.environ.get('PUBLISH') == 'true':
+              r = subprocess.run(['git', 'ls-remote', '--tags', 'origin', pom_version],
+                                 capture_output=True, text=True)
+              if r.stdout.strip():
+                  print('远端存在 tag %s，允许手动发布' % pom_version)
+              else:
+                  raise SystemExit('::error::手动发布要求远端存在与 pom 版本一致的 tag（%s）；'
+                                   '请先 git push origin %s' % (pom_version, pom_version))
+          else:
+              print('干跑模式，跳过 tag 一致性检查')
           PY
 
       - name: Import GPG private key
@@ -104,13 +190,40 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && !inputs.publish
         env:
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-        run: ./mvnw -B -ntp -Prelease verify -Dgpg.passphrase="$GPG_PASSPHRASE"
+        run: mvn -B -ntp -Prelease verify -Dgpg.passphrase="$GPG_PASSPHRASE"
 
       - name: Publish to Maven Central
-        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish)
+        if: github.event_name == 'push' || github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.publish)
         env:
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-        run: ./mvnw -B -ntp -Prelease deploy -Dgpg.passphrase="$GPG_PASSPHRASE"
+        run: mvn -B -ntp -Prelease deploy -Dgpg.passphrase="$GPG_PASSPHRASE"
+
+      # 发布成功后自动创建 GitHub Release（已存在则跳过，保持幂等）。
+      # notes 取 CHANGELOG.md 中该版本的小节；用内置 GITHUB_TOKEN 鉴权
+      - name: Create GitHub Release
+        if: github.event_name == 'push' || github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.publish)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(grep -m1 -o '<version>[^<]*' pom.xml | cut -d'>' -f2)
+          echo "version = $VERSION"
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "GitHub Release $VERSION 已存在，跳过创建"
+            exit 0
+          fi
+          NOTES=$(awk -v v="$VERSION" '
+            BEGIN { gsub(/\./, "\\.", v) }
+            /^## [0-9]/ {
+              if (found) exit
+              if ($0 ~ "^## " v "([^0-9]|$)") found = 1
+            }
+            found { print }
+          ' CHANGELOG.md)
+          if [ -z "$NOTES" ]; then
+            echo "::warning::CHANGELOG.md 中未找到 $VERSION 小节，使用占位 notes"
+            NOTES="jOOQ-PostGIS $VERSION 已发布到 Maven Central，详见 CHANGELOG.md。"
+          fi
+          gh release create "$VERSION" --title "$VERSION" --notes "$NOTES"
 
       # 上传失败时把待发布的 bundle 留档，便于定位 Central 侧校验问题
       - name: Upload bundle for diagnosis
