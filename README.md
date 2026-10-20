@@ -58,7 +58,7 @@ Add `jooq-postgis` to your `pom.xml`:
 <dependency>
     <groupId>top.yunitytech.maven</groupId>
     <artifactId>jooq-postgis</artifactId>
-    <version>1.0.10</version>
+    <version>1.0.11</version>
 </dependency>
 ```
 
@@ -84,7 +84,7 @@ In your code generation configuration, add `jooq-postgis` to the plugin `<depend
         <dependency>
             <groupId>top.yunitytech.maven</groupId>
             <artifactId>jooq-postgis</artifactId>
-            <version>1.0.10</version>
+            <version>1.0.11</version>
         </dependency>
     </dependencies>
     <configuration>

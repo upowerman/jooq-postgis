@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.0.11 (2026-10-20)
+
+CI release — **no artifact changes**; the jar is identical to 1.0.10 and existing consumers do not
+need to upgrade.
+
+### Changed
+
+- **Maven Wrapper removed** from the repository. Release builds instead download Maven 3.9.16 from
+  `archive.apache.org` (sha512-verified) inside the workflow — the pinned version stays load-bearing:
+  runner-provided Maven 3.10.0 writes `maven-metadata-local.xml` into central-staging, which fails
+  Central validation. CI test legs use the system Maven, which is unaffected.
+- **Dual-trigger release workflow**: publishing a GitHub Release (`release: published`) now also
+  triggers the Maven Central publish, in addition to pushing a `1.0.x` tag. This closes the gap
+  observed with 1.0.10, where a tag created implicitly by `gh release create` fired no `push` event
+  and the publish silently never ran.
+- **Release builds now run the PostGIS integration tests** against a `postgis/postgis` service
+  container (previously they silently skipped: 0 test cases in publish builds). CI gained
+  `permissions: contents: read` and a 15-minute job timeout.
+- **GitHub Releases are created automatically** after a successful Central publish, with notes taken
+  from the matching CHANGELOG section.
+
 ## 1.0.10 (2026-10-20)
 
 CI release — **no artifact changes**; the jar is identical to 1.0.9 and existing consumers do not
