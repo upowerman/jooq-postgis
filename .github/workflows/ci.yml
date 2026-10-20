@@ -5,10 +5,14 @@ on:
     branches: [ main ]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     name: Java ${{ matrix.java }} / jOOQ ${{ matrix.jooq }}
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     services:
       postgis:
@@ -70,6 +74,8 @@ jobs:
           java-version: ${{ matrix.java }}
           cache: maven
 
+      # CI 用 runner 系统 Maven 即可（3.10.0 只影响 release 的 central-staging
+      # install，测试矩阵不受影响）；release.yml 才需要固定 Maven 3.9.x
       - name: Build and test (jOOQ ${{ matrix.jooq }})
         run: mvn -B -ntp test -Djooq.version=${{ matrix.jooq }} ${{ matrix.extra_flags }}
 
