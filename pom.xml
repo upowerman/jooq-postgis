@@ -149,7 +149,7 @@
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-gpg-plugin</artifactId>
-                        <version>3.0.1</version>
+                        <version>3.1.0</version>
                         <executions>
                             <execution>
                                 <id>sign-artifacts</id>
@@ -163,11 +163,16 @@
                     <plugin>
                         <groupId>org.sonatype.central</groupId>
                         <artifactId>central-publishing-maven-plugin</artifactId>
-                        <version>0.7.0</version>
+                        <version>0.11.0</version>
                         <extensions>true</extensions>
                         <configuration>
                             <publishingServerId>central</publishingServerId>
                             <autoPublish>true</autoPublish>
+                            <!--
+                                只等到 Central 校验通过（VALIDATED）就返回，不再空等
+                                PUBLISHED 阶段。插件只接受 UPLOADED / VALIDATED / PUBLISHED。
+                            -->
+                            <waitUntil>VALIDATED</waitUntil>
                         </configuration>
                     </plugin>
                 </plugins>
