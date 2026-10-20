@@ -52,7 +52,7 @@ jobs:
       - name: Toolchain versions
         run: |
           java -version
-          mvn -v
+          ./mvnw -v
 
       # 防呆：tag 和 pom 版本不一致时直接失败
       - name: Verify tag matches pom version
@@ -104,13 +104,13 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && !inputs.publish
         env:
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-        run: mvn -B -ntp -Prelease verify -Dgpg.passphrase="$GPG_PASSPHRASE"
+        run: ./mvnw -B -ntp -Prelease verify -Dgpg.passphrase="$GPG_PASSPHRASE"
 
       - name: Publish to Maven Central
         if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish)
         env:
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-        run: mvn -B -ntp -Prelease deploy -Dgpg.passphrase="$GPG_PASSPHRASE"
+        run: ./mvnw -B -ntp -Prelease deploy -Dgpg.passphrase="$GPG_PASSPHRASE"
 
       # 上传失败时把待发布的 bundle 留档，便于定位 Central 侧校验问题
       - name: Upload bundle for diagnosis
